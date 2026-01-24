@@ -65,11 +65,15 @@ async def scan_and_update_processes(trigger_icons: bool = True):
 
         current_names.add(name)
 
-        # Check if it serves HTML
-        is_html = await check_port_returns_html(port)
-
         # Get existing state
         existing = get_process(name)
+
+        # Once a process is identified as HTML, it stays that way forever.
+        # Only check HTML for processes not already known to be GUI apps.
+        if existing and existing.get("is_html"):
+            is_html = True
+        else:
+            is_html = await check_port_returns_html(port)
 
         # Update state - process is running so is_dead=False
         update_process(
