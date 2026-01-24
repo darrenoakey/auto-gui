@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""
+Auto-GUI CLI - Web dashboard for auto-managed processes.
+
+Commands:
+    serve   Start the web server
+    add     Add a manual website to the dashboard
+    remove  Remove a manual website from the dashboard
+    list    List all manual websites
+    test    Run tests
+    check   Run all quality gates
+"""
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def get_project_root() -> Path:
+    """Returns the absolute path to the project directory."""
+    return Path(__file__).parent.absolute()
+
+
+def run_serve(args):
+    """Start the FastAPI server."""
+    try:
+        import setproctitle
+        setproctitle.setproctitle("auto-gui")
+    except ImportError:
+        pass
+
+    import uvicorn
+    sys.path.insert(0, str(get_project_root() / "src"))
+    from server import app
+
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+    )
+
+
+def run_test(args):
+    """Run pytest on the test suite."""
+    project_root = get_project_root()
+    src_dir = project_root / "src"
+
+    cmd = [
+        sys.executable, "-m", "pytest",
+        str(src_dir),
+        "-v",
+    ]
+
+    if args.pattern:
+        cmd.extend(["-k", args.pattern])
+
+    os.chdir(src_dir)
+    result = subprocess.run(cmd)
+    sys.exit(result.returncode)
+
+
+def run_check(args):
+    """Run all quality gates."""
+    project_root = get_project_root()
+    src_dir = project_root / "src"
+
+    print("Running tests...")
+    os.chdir(src_dir)
+    result = subprocess.run([
+        sys.executable, "-m", "pytest",
+        str(src_dir),
+        "-v",
+    ])
+
+    if result.returncode != 0:
+        print("\nQuality gate FAILED: Tests did not pass")
+        sys.exit(1)
+
+    print("\nAll quality gates passed!")
+    sys.exit(0)
+
+
+def run_add(args):
+    """Add a manual website to the dashboard."""
+    sys.path.insert(0, str(get_project_root() / "src"))
+    from state_manager import add_website, get_website
+
+    # Check if already exists
+    existing = get_website(args.name)
+    if existing:
+        print(f"Website '{args.name}' already exists with URL: {existing['url']}")
+        print("Use 'remove' first if you want to change it.")
+        sys.exit(1)
+
+    add_website(args.name, args.url)
+    print(f"Added website '{args.name}' -> {args.url}")
+
+
+def run_remove(args):
+    """Remove a manual website from the dashboard."""
+    sys.path.insert(0, str(get_project_root() / "src"))
+    from state_manager import remove_website
+
+    if remove_website(args.name):
+        print(f"Removed website '{args.name}'")
+    else:
+        print(f"Website '{args.name}' not found")
+        sys.exit(1)
+
+
+def run_list(args):
+    """List all manual websites."""
+    sys.path.insert(0, str(get_project_root() / "src"))
+    from state_manager import list_websites
+
+    websites = list_websites()
+    if not websites:
+        print("No manual websites configured")
+        return
+
+    print("Manual websites:")
+    for w in websites:
+        print(f"  {w['name']}: {w['url']}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Auto-GUI - Web dashboard for auto-managed processes",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # serve command
+    serve_parser = subparsers.add_parser("serve", help="Start the web server")
+    serve_parser.add_argument(
+        "--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)"
+    )
+    serve_parser.add_argument(
+        "--port", type=int, default=2000, help="Port to listen on (default: 2000)"
+    )
+    serve_parser.set_defaults(func=run_serve)
+
+    # test command
+    test_parser = subparsers.add_parser("test", help="Run tests")
+    test_parser.add_argument(
+        "-k", "--pattern", help="Only run tests matching this pattern"
+    )
+    test_parser.set_defaults(func=run_test)
+
+    # check command
+    check_parser = subparsers.add_parser("check", help="Run all quality gates")
+    check_parser.set_defaults(func=run_check)
+
+    # add command
+    add_parser = subparsers.add_parser("add", help="Add a manual website to the dashboard")
+    add_parser.add_argument("name", help="Display name for the website")
+    add_parser.add_argument("url", help="URL of the website (e.g., https://example.com)")
+    add_parser.set_defaults(func=run_add)
+
+    # remove command
+    remove_parser = subparsers.add_parser("remove", help="Remove a manual website")
+    remove_parser.add_argument("name", help="Name of the website to remove")
+    remove_parser.set_defaults(func=run_remove)
+
+    # list command
+    list_parser = subparsers.add_parser("list", help="List all manual websites")
+    list_parser.set_defaults(func=run_list)
+
+    args = parser.parse_args()
+
+    if args.command is None:
+        parser.print_help()
+        sys.exit(1)
+
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

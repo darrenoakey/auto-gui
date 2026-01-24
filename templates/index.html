@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto-GUI</title>
+    <link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+    <div class="dashboard">
+        <aside class="sidebar">
+            <h1 class="logo">Auto-GUI</h1>
+            <nav class="process-list" id="process-list">
+                {% for process in processes %}
+                <button
+                    class="process-button"
+                    data-name="{{ process.name }}"
+                    data-port="{{ process.port or '' }}"
+                    data-url="{{ process.url or '' }}"
+                    data-is-website="{{ 'true' if process.is_website else 'false' }}"
+                    onclick="showProcess('{{ process.name }}', '{{ process.port or '' }}', '{{ process.url or '' }}', {{ 'true' if process.is_website else 'false' }})"
+                    title="{{ process.description or '' }}"
+                >
+                    <img
+                        src="{% if process.icon_status == 'ready' %}/icons/{{ process.name }}.png{% else %}/static/img/placeholder.png{% endif %}"
+                        alt="{{ process.name }}"
+                        class="process-icon"
+                        onerror="this.src='/static/img/placeholder.png'"
+                    >
+                    <span class="process-name">{{ process.name }}</span>
+                    <span class="process-port">{% if process.is_website %}web{% else %}:{{ process.port }}{% endif %}</span>
+                </button>
+                {% endfor %}
+            </nav>
+            <div class="sidebar-footer">
+                <span class="last-scan" id="last-scan">
+                    {% if last_scan %}Last: {{ last_scan[:16] }}{% endif %}
+                </span>
+            </div>
+        </aside>
+        <main class="content" id="content">
+            <div class="welcome-message" id="welcome">
+                <h2>Auto-GUI</h2>
+                <p>Select an app from the sidebar</p>
+            </div>
+            <!-- Iframes will be added here dynamically -->
+        </main>
+    </div>
+    <script>
+        // Server PID for detecting restarts
+        window.SERVER_PID = {{ server_pid }};
+        window.CHANGE_VERSION = 0;
+    </script>
+    <script src="/static/js/main.js"></script>
+</body>
+</html>
