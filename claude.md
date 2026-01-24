@@ -71,3 +71,7 @@ All tests are in `src/*_test.py` files. Run with `pytest src/`.
 - The `remove-background` tool can be too aggressive on icons - JPGs often look better than the processed PNGs
 - Icon prompts need explicit requirements: flat solid background (no gradients), bold simple shapes for tiny display, high contrast
 - Frontend polling is tolerant of server restarts - waits for consecutive successful polls before refreshing
+- **Use `auto -q restart auto-gui`** to restart the server, never `./run serve` directly
+- Process list is sorted alphabetically - sorting happens both server-side (`get_all_visible_items`) and client-side (JS rebuilds list on each poll)
+- Dead vs removed: processes still in auto's state.json but not running are "dead" (shown with ✕), processes completely removed from auto are hidden
+- Popout button uses event.target check in `handleButtonClick()` to distinguish clicks on the ↗ from clicks on the main button
