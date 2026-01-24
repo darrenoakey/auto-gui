@@ -49,6 +49,9 @@ The server triggers icon generation based on file existence (`has_icon(name)`), 
 ### HTML Detection
 `html_checker.py` requires both HTTP 200 status AND actual HTML structure in body (`<!doctype html` or `<html`). This filters out API servers and error pages.
 
+### is_html Persistence
+Once a process is identified as `is_html: true`, it **stays that way forever** - never rechecked or downgraded. This prevents GUI apps from disappearing if they're temporarily unavailable during a scan. Non-HTML processes continue to be checked (they might become GUI apps). A GUI app only disappears when completely removed from auto.
+
 ## Commands
 
 ```bash
