@@ -19,6 +19,7 @@ from state_manager import (
     get_website,
     list_websites,
     load_state,
+    mark_process_dead,
     mark_process_invisible,
     remove_website,
     save_state,
@@ -137,6 +138,26 @@ class TestMarkProcessInvisible:
 
     def test_no_error_for_missing(self, temp_state_dir):
         mark_process_invisible("nonexistent")
+
+
+class TestMarkProcessDead:
+    def test_marks_dead(self, temp_state_dir):
+        update_process("myapp", port=8080, is_dead=False)
+        mark_process_dead("myapp")
+        result = get_process("myapp")
+        assert result["is_dead"] is True
+
+    def test_no_error_for_missing(self, temp_state_dir):
+        mark_process_dead("nonexistent")
+
+    def test_process_with_is_dead_field(self, temp_state_dir):
+        update_process("myapp", port=8080, is_dead=True)
+        result = get_process("myapp")
+        assert result["is_dead"] is True
+        # Now mark as not dead
+        update_process("myapp", is_dead=False)
+        result = get_process("myapp")
+        assert result["is_dead"] is False
 
 
 class TestGetVisibleHtmlProcesses:

@@ -17,6 +17,28 @@ let consecutiveSuccesses = 0;
 const REQUIRED_SUCCESSES = 2;  // Require 2 successful polls before refreshing
 
 /**
+ * Open a process or website in a new browser window
+ */
+function openInNewWindow(name, port, url, isWebsite) {
+    const targetUrl = isWebsite ? url : `http://localhost:${port}/`;
+    window.open(targetUrl, '_blank');
+}
+
+/**
+ * Handle button click - check if popout button was clicked
+ */
+function handleButtonClick(event, name, port, url, isWebsite) {
+    // Check if the click was on the popout button
+    if (event.target.classList.contains('popout-button')) {
+        event.stopPropagation();
+        openInNewWindow(name, port, url, isWebsite);
+        return;
+    }
+    // Otherwise, show the process in iframe
+    showProcess(name, port, url, isWebsite);
+}
+
+/**
  * Show a process or website iframe, creating it if necessary
  */
 function showProcess(name, port, url, isWebsite) {
@@ -144,75 +166,59 @@ function updateProcessList(processes) {
     const list = document.getElementById('process-list');
     const currentProcessNames = new Set(processes.map(p => p.name));
 
-    // Remove buttons for processes that no longer exist
+    // Sort processes alphabetically
+    processes.sort((a, b) => a.name.localeCompare(b.name));
+
+    // Remove iframes for processes that no longer exist
     document.querySelectorAll('.process-button').forEach(button => {
-        if (!currentProcessNames.has(button.dataset.name)) {
-            button.remove();
-            // Also remove the iframe
-            const container = loadedIframes.get(button.dataset.name);
+        const name = button.dataset.name;
+        if (!currentProcessNames.has(name)) {
+            const container = loadedIframes.get(name);
             if (container) {
                 container.remove();
-                loadedIframes.delete(button.dataset.name);
+                loadedIframes.delete(name);
             }
         }
     });
 
-    // Add or update buttons for current processes
-    const existingButtons = new Map();
-    document.querySelectorAll('.process-button').forEach(button => {
-        existingButtons.set(button.dataset.name, button);
-    });
+    // Clear and rebuild list to maintain sort order
+    list.innerHTML = '';
 
     processes.forEach(process => {
-        let button = existingButtons.get(process.name);
         const isWebsite = process.is_website || false;
         const port = process.port || '';
         const url = process.url || '';
         const description = process.description || '';
+        const isDead = process.is_dead || false;
 
-        if (!button) {
-            // Create new button
-            button = document.createElement('button');
-            button.className = 'process-button';
-            button.dataset.name = process.name;
-            button.dataset.port = port;
-            button.dataset.url = url;
-            button.dataset.isWebsite = isWebsite ? 'true' : 'false';
-            button.onclick = () => showProcess(process.name, port, url, isWebsite);
-            button.title = description;
+        // Always create fresh button to ensure correct structure
+        const button = document.createElement('button');
+        button.className = 'process-button' + (isDead ? ' dead' : '');
+        button.dataset.name = process.name;
+        button.dataset.port = port;
+        button.dataset.url = url;
+        button.dataset.isWebsite = isWebsite ? 'true' : 'false';
+        button.dataset.isDead = isDead ? 'true' : 'false';
+        button.onclick = (e) => handleButtonClick(e, process.name, port, url, isWebsite);
+        button.title = description;
 
-            button.innerHTML = `
-                <img
-                    src="${process.icon_status === 'ready' ? `/icons/${process.name}.png?v=${Date.now()}` : '/static/img/placeholder.png'}"
-                    alt="${process.name}"
-                    class="process-icon"
-                    onerror="this.src='/static/img/placeholder.png'"
-                >
-                <span class="process-name">${process.name}</span>
-                <span class="process-port">${isWebsite ? 'web' : ':' + port}</span>
-            `;
+        button.innerHTML = `
+            ${isDead ? '<span class="dead-indicator" title="Process not running">✕</span>' : ''}
+            <img
+                src="${process.icon_status === 'ready' ? `/icons/${process.name}.png?v=${Date.now()}` : '/static/img/placeholder.png'}"
+                alt="${process.name}"
+                class="process-icon"
+                onerror="this.src='/static/img/placeholder.png'"
+            >
+            <span class="process-name">${process.name}</span>
+            <span class="process-port">${isWebsite ? 'web' : ':' + port}</span>
+            <span class="popout-button" title="Open in new window">↗</span>
+        `;
 
-            list.appendChild(button);
+        list.appendChild(button);
 
-            if (process.name === currentProcess) {
-                button.classList.add('active');
-            }
-        } else {
-            // Update port/url if changed
-            button.dataset.port = port;
-            button.dataset.url = url;
-            button.title = description;
-            const portEl = button.querySelector('.process-port');
-            portEl.textContent = isWebsite ? 'web' : `:${port}`;
-
-            // Update icon if status changed to ready
-            const icon = button.querySelector('.process-icon');
-            if (process.icon_status === 'ready') {
-                const newSrc = `/icons/${process.name}.png?v=${Date.now()}`;
-                if (!icon.src.includes(`/icons/${process.name}.png`)) {
-                    icon.src = newSrc;
-                }
-            }
+        if (process.name === currentProcess) {
+            button.classList.add('active');
         }
     });
 }

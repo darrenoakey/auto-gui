@@ -19,7 +19,7 @@ from icon_generator import (
     start_icon_worker,
     stop_icon_worker,
 )
-from process_scanner import scan_processes
+from process_scanner import get_registered_process_names, scan_processes
 from state_manager import (
     get_all_visible_items,
     get_icons_dir,
@@ -28,6 +28,7 @@ from state_manager import (
     get_project_root,
     get_visible_html_processes,
     list_websites,
+    mark_process_dead,
     mark_process_invisible,
     update_last_scan,
     update_process,
@@ -51,6 +52,9 @@ async def scan_and_update_processes(trigger_icons: bool = True):
     processes = scan_processes()
     current_names = set()
 
+    # Get all processes registered in auto (whether running or not)
+    registered_names = get_registered_process_names()
+
     for proc in processes:
         name = proc["name"]
         port = proc["port"]
@@ -67,12 +71,13 @@ async def scan_and_update_processes(trigger_icons: bool = True):
         # Get existing state
         existing = get_process(name)
 
-        # Update state
+        # Update state - process is running so is_dead=False
         update_process(
             name=name,
             port=port,
             is_html=is_html,
             visible=True,
+            is_dead=False,
             workdir=proc.get("workdir"),
         )
 
@@ -87,10 +92,16 @@ async def scan_and_update_processes(trigger_icons: bool = True):
             if needs_work:
                 queue_icon_generation(name, is_website=False)
 
-    # Mark missing processes as invisible
+    # Handle processes that are visible but not currently running
     for proc in get_visible_html_processes():
         if proc["name"] not in current_names:
-            mark_process_invisible(proc["name"])
+            # Check if still registered in auto's state
+            if proc["name"] in registered_names:
+                # Still registered, just dead - mark as dead but keep visible
+                mark_process_dead(proc["name"])
+            else:
+                # Completely removed from auto - hide it
+                mark_process_invisible(proc["name"])
 
     # Queue website icons
     if trigger_icons:

@@ -4,6 +4,7 @@ from unittest.mock import patch
 from process_scanner import (
     get_auto_state,
     get_process_workdir,
+    get_registered_process_names,
     parse_auto_ps_output,
     run_auto_ps,
     scan_processes,
@@ -100,6 +101,22 @@ class TestGetProcessWorkdir:
         with patch("process_scanner.AUTO_STATE_PATH", state_file):
             result = get_process_workdir("nonexistent")
             assert result is None
+
+
+class TestGetRegisteredProcessNames:
+    def test_returns_empty_set_when_no_processes(self, tmp_path):
+        state_file = tmp_path / "state.json"
+        state_file.write_text('{"processes": {}}')
+        with patch("process_scanner.AUTO_STATE_PATH", state_file):
+            result = get_registered_process_names()
+            assert result == set()
+
+    def test_returns_all_registered_names(self, tmp_path):
+        state_file = tmp_path / "state.json"
+        state_file.write_text('{"processes": {"app1": {}, "app2": {}, "app3": {}}}')
+        with patch("process_scanner.AUTO_STATE_PATH", state_file):
+            result = get_registered_process_names()
+            assert result == {"app1", "app2", "app3"}
 
 
 class TestScanProcesses:

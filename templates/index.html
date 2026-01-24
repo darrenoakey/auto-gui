@@ -13,14 +13,16 @@
             <nav class="process-list" id="process-list">
                 {% for process in processes %}
                 <button
-                    class="process-button"
+                    class="process-button{% if process.is_dead %} dead{% endif %}"
                     data-name="{{ process.name }}"
                     data-port="{{ process.port or '' }}"
                     data-url="{{ process.url or '' }}"
                     data-is-website="{{ 'true' if process.is_website else 'false' }}"
-                    onclick="showProcess('{{ process.name }}', '{{ process.port or '' }}', '{{ process.url or '' }}', {{ 'true' if process.is_website else 'false' }})"
+                    data-is-dead="{{ 'true' if process.is_dead else 'false' }}"
+                    onclick="handleButtonClick(event, '{{ process.name }}', '{{ process.port or '' }}', '{{ process.url or '' }}', {{ 'true' if process.is_website else 'false' }})"
                     title="{{ process.description or '' }}"
                 >
+                    {% if process.is_dead %}<span class="dead-indicator" title="Process not running">✕</span>{% endif %}
                     <img
                         src="{% if process.icon_status == 'ready' %}/icons/{{ process.name }}.png{% else %}/static/img/placeholder.png{% endif %}"
                         alt="{{ process.name }}"
@@ -29,6 +31,7 @@
                     >
                     <span class="process-name">{{ process.name }}</span>
                     <span class="process-port">{% if process.is_website %}web{% else %}:{{ process.port }}{% endif %}</span>
+                    <span class="popout-button" title="Open in new window">↗</span>
                 </button>
                 {% endfor %}
             </nav>

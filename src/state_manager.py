@@ -74,6 +74,7 @@ def update_process(
     icon_status: Optional[str] = None,
     workdir: Optional[str] = None,
     description: Optional[str] = None,
+    is_dead: Optional[bool] = None,
 ) -> dict:
     """
     Updates or creates a process entry.
@@ -92,6 +93,7 @@ def update_process(
             "last_seen": None,
             "workdir": None,
             "description": None,
+            "is_dead": False,
         }
 
     process = state["processes"][name]
@@ -110,6 +112,8 @@ def update_process(
         process["workdir"] = workdir
     if description is not None:
         process["description"] = description
+    if is_dead is not None:
+        process["is_dead"] = is_dead
 
     process["last_seen"] = datetime.now().isoformat()
 
@@ -118,10 +122,18 @@ def update_process(
 
 
 def mark_process_invisible(name: str) -> None:
-    """Marks a process as invisible (disappeared but kept in state)."""
+    """Marks a process as invisible (removed from auto entirely)."""
     state = load_state()
     if name in state["processes"]:
         state["processes"][name]["visible"] = False
+        save_state(state)
+
+
+def mark_process_dead(name: str) -> None:
+    """Marks a process as dead (registered in auto but not running)."""
+    state = load_state()
+    if name in state["processes"]:
+        state["processes"][name]["is_dead"] = True
         save_state(state)
 
 
@@ -220,7 +232,7 @@ def list_websites() -> list[dict]:
 
 
 def get_all_visible_items() -> list[dict]:
-    """Returns list of all visible items (processes and websites)."""
+    """Returns list of all visible items (processes and websites), sorted alphabetically."""
     state = load_state()
     items = []
 
@@ -233,5 +245,8 @@ def get_all_visible_items() -> list[dict]:
     for w in state.get("websites", {}).values():
         if w.get("visible", True):
             items.append(w)
+
+    # Sort alphabetically by name
+    items.sort(key=lambda x: x.get("name", "").lower())
 
     return items

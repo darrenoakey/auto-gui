@@ -83,6 +83,15 @@ def get_process_workdir(name: str) -> Optional[str]:
     return None
 
 
+def get_registered_process_names() -> set[str]:
+    """
+    Returns set of all process names registered in auto's state.json.
+    These are processes that auto knows about, whether running or not.
+    """
+    state = get_auto_state()
+    return set(state.get("processes", {}).keys())
+
+
 def scan_processes() -> list[dict]:
     """
     Scans for running auto processes with ports.
