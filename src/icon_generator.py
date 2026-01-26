@@ -5,6 +5,12 @@ Generates app summaries and icons using Claude Agent SDK and generate_image.
 Icon generation runs in a separate background worker, completely decoupled from
 the main server. Items needing icons are added to a queue, and a worker processes
 them one at a time without blocking the server.
+
+Design principles:
+- NO timestamp checking - only check if files exist
+- If any step runs, all downstream steps run (force_downstream boolean)
+- Atomic swap for image files - old icon stays visible until new one is ready
+- Generate to temp file, then swap atomically
 """
 import asyncio
 import subprocess
@@ -185,37 +191,40 @@ def has_icon(name: str) -> bool:
     return get_icon_path(name).exists()
 
 
-def is_newer_than(source: Path, target: Path) -> bool:
+def atomic_swap(temp_path: Path, final_path: Path) -> bool:
     """
-    Returns True if source is newer than target, or if target doesn't exist.
-    Used for cascading regeneration - if a dependency changes, downstream files
-    need to be regenerated.
+    Atomically swaps a temp file into place.
+    - Renames final_path to final_path.old (if exists)
+    - Renames temp_path to final_path
+    - Deletes final_path.old
+
+    Returns True on success, False on failure.
+    The old file stays in place until the new one is ready.
     """
-    if not target.exists():
+    old_path = final_path.with_suffix(final_path.suffix + ".old")
+
+    try:
+        # Move existing file to .old (if exists)
+        if final_path.exists():
+            final_path.rename(old_path)
+
+        # Move temp file to final location
+        temp_path.rename(final_path)
+
+        # Delete old file
+        if old_path.exists():
+            old_path.unlink()
+
         return True
-    if not source.exists():
+    except Exception as e:
+        print(f"Atomic swap failed: {e}")
+        # Try to restore old file if something went wrong
+        if old_path.exists() and not final_path.exists():
+            try:
+                old_path.rename(final_path)
+            except Exception:
+                pass
         return False
-    return source.stat().st_mtime > target.stat().st_mtime
-
-
-def needs_regeneration(name: str, stage: str) -> bool:
-    """
-    Check if a stage needs regeneration based on its dependency being newer.
-    Stages: 'prompt' (depends on summary), 'jpg' (depends on prompt), 'png' (depends on jpg)
-    """
-    if stage == 'prompt':
-        summary_path = get_summary_path(name)
-        prompt_path = get_icon_prompt_path(name)
-        return is_newer_than(summary_path, prompt_path)
-    elif stage == 'jpg':
-        prompt_path = get_icon_prompt_path(name)
-        jpg_path = get_icon_jpg_path(name)
-        return is_newer_than(prompt_path, jpg_path)
-    elif stage == 'png':
-        jpg_path = get_icon_jpg_path(name)
-        png_path = get_icon_path(name)
-        return is_newer_than(jpg_path, png_path)
-    return False
 
 
 def load_icon_prompt(name: str) -> Optional[str]:
@@ -404,7 +413,7 @@ def save_icon_prompt(name: str, prompt: str) -> None:
 def generate_image_sync(prompt: str, output_path: Path) -> bool:
     """
     Calls generate_image to create an icon.
-    Synchronous.
+    Synchronous. Writes to output_path (should be a temp path).
     """
     if not GENERATE_IMAGE.exists():
         print(f"generate_image not found at {GENERATE_IMAGE}")
@@ -425,7 +434,10 @@ def generate_image_sync(prompt: str, output_path: Path) -> bool:
             text=True,
             timeout=300,  # 5 minute timeout
         )
-        return result.returncode == 0
+        # Verify the file was actually created at the expected path
+        if result.returncode == 0 and output_path.exists():
+            return True
+        return False
     except Exception as e:
         print(f"Image generation failed: {e}")
         return False
@@ -434,7 +446,7 @@ def generate_image_sync(prompt: str, output_path: Path) -> bool:
 def remove_background_sync(input_path: Path, output_path: Path) -> bool:
     """
     Removes background from an image for transparency.
-    Synchronous.
+    Synchronous. Writes to output_path (should be a temp path).
     """
     if not REMOVE_BACKGROUND.exists():
         print(f"remove-background not found at {REMOVE_BACKGROUND}")
@@ -453,7 +465,10 @@ def remove_background_sync(input_path: Path, output_path: Path) -> bool:
             text=True,
             timeout=120,  # 2 minute timeout
         )
-        return result.returncode == 0
+        # Verify the file was actually created at the expected path
+        if result.returncode == 0 and output_path.exists():
+            return True
+        return False
     except Exception as e:
         print(f"Background removal failed: {e}")
         return False
@@ -461,14 +476,18 @@ def remove_background_sync(input_path: Path, output_path: Path) -> bool:
 
 async def process_app_async(name: str, port: Optional[int], workdir: Optional[str]) -> None:
     """
-    Processes an app through cascading idempotent steps.
-    If an earlier artifact is newer than a later one, the later one is regenerated.
+    Processes an app through cascading steps.
     Steps: summary → icon_prompt → jpg → png
 
-    To regenerate an icon: just delete the prompt file. The jpg and png will
-    be regenerated because the new prompt will be newer than them.
+    Design: NO timestamp checking. Only check if files exist.
+    If any step runs, all downstream steps run (force_downstream).
+    Images use atomic swap - old icon stays visible until new one is ready.
+
+    To regenerate: delete the prompt file. Summary stays, downstream regenerates.
     """
-    # Step 1: Generate summary if needed
+    force_downstream = False
+
+    # Step 1: Generate summary if missing
     if not has_summary(name):
         print(f"[{name}] Generating summary...")
         try:
@@ -476,6 +495,7 @@ async def process_app_async(name: str, port: Optional[int], workdir: Optional[st
             save_summary(name, summary)
             update_process(name, description=summary)
             increment_change_version()
+            force_downstream = True
         except Exception as e:
             print(f"[{name}] Failed to generate summary: {e}")
             return
@@ -485,8 +505,8 @@ async def process_app_async(name: str, port: Optional[int], workdir: Optional[st
         if process and not process.get("description"):
             update_process(name, description=summary)
 
-    # Step 2: Generate icon prompt if needed OR if summary is newer
-    if needs_regeneration(name, 'prompt'):
+    # Step 2: Generate icon prompt if missing OR forced
+    if force_downstream or not has_icon_prompt(name):
         summary = load_summary(name)
         if not summary:
             return
@@ -494,40 +514,69 @@ async def process_app_async(name: str, port: Optional[int], workdir: Optional[st
         try:
             icon_prompt = await generate_icon_description_async(name, summary)
             save_icon_prompt(name, icon_prompt)
+            force_downstream = True
         except Exception as e:
             print(f"[{name}] Failed to generate icon prompt: {e}")
             return
 
-    # Step 3: Generate JPG if needed OR if prompt is newer (run in thread pool)
+    # Step 3: Generate JPG if missing OR forced
     jpg_path = get_icon_jpg_path(name)
-    if needs_regeneration(name, 'jpg'):
+    if force_downstream or not has_icon_jpg(name):
         icon_prompt = load_icon_prompt(name)
         if not icon_prompt:
             return
         print(f"[{name}] Generating JPG...")
         update_process(name, icon_status="generating")
+
+        # Generate to temp file, then atomic swap
+        temp_jpg = jpg_path.with_suffix(".jpg.tmp")
         loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, generate_image_sync, icon_prompt, jpg_path)
-        if not success:
+        success = await loop.run_in_executor(None, generate_image_sync, icon_prompt, temp_jpg)
+
+        if not success or not temp_jpg.exists():
             print(f"[{name}] Failed to generate JPG")
+            update_process(name, icon_status="failed")
+            if temp_jpg.exists():
+                temp_jpg.unlink()
+            return
+
+        # Atomic swap - old jpg stays until new one is ready
+        if not atomic_swap(temp_jpg, jpg_path):
+            print(f"[{name}] Failed to swap JPG")
             update_process(name, icon_status="failed")
             return
 
-    # Step 4: Generate PNG if needed OR if jpg is newer (run in thread pool)
+        force_downstream = True
+
+    # Step 4: Generate PNG if missing OR forced
     png_path = get_icon_path(name)
-    if needs_regeneration(name, 'png'):
+    if force_downstream or not has_icon(name):
         if not has_icon_jpg(name):
             return
         print(f"[{name}] Removing background...")
+
+        # Generate to temp file, then atomic swap
+        temp_png = png_path.with_suffix(".png.tmp")
         loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, remove_background_sync, jpg_path, png_path)
-        if success:
-            update_process(name, icon_path=str(png_path), icon_status="ready")
-            increment_change_version()
-        else:
+        success = await loop.run_in_executor(None, remove_background_sync, jpg_path, temp_png)
+
+        if not success or not temp_png.exists():
             print(f"[{name}] Failed to remove background")
             update_process(name, icon_status="failed")
+            if temp_png.exists():
+                temp_png.unlink()
+            return
+
+        # Atomic swap - old png stays until new one is ready
+        if not atomic_swap(temp_png, png_path):
+            print(f"[{name}] Failed to swap PNG")
+            update_process(name, icon_status="failed")
+            return
+
+        update_process(name, icon_path=str(png_path), icon_status="ready")
+        increment_change_version()
     else:
+        # Ensure status is ready if PNG exists
         process = get_process(name)
         if process and process.get("icon_status") != "ready":
             update_process(name, icon_status="ready", icon_path=str(png_path))
@@ -535,14 +584,18 @@ async def process_app_async(name: str, port: Optional[int], workdir: Optional[st
 
 async def process_website_async(name: str, url: str) -> None:
     """
-    Processes a website through cascading idempotent steps.
-    If an earlier artifact is newer than a later one, the later one is regenerated.
+    Processes a website through cascading steps.
     Steps: summary → icon_prompt → jpg → png
 
-    To regenerate an icon: just delete the prompt file. The jpg and png will
-    be regenerated because the new prompt will be newer than them.
+    Design: NO timestamp checking. Only check if files exist.
+    If any step runs, all downstream steps run (force_downstream).
+    Images use atomic swap - old icon stays visible until new one is ready.
+
+    To regenerate: delete the prompt file. Summary stays, downstream regenerates.
     """
-    # Step 1: Generate summary if needed
+    force_downstream = False
+
+    # Step 1: Generate summary if missing
     if not has_summary(name):
         print(f"[{name}] Generating summary...")
         try:
@@ -550,6 +603,7 @@ async def process_website_async(name: str, url: str) -> None:
             save_summary(name, summary)
             update_website(name, description=summary)
             increment_change_version()
+            force_downstream = True
         except Exception as e:
             print(f"[{name}] Failed to generate summary: {e}")
             return
@@ -559,8 +613,8 @@ async def process_website_async(name: str, url: str) -> None:
         if website and not website.get("description"):
             update_website(name, description=summary)
 
-    # Step 2: Generate icon prompt if needed OR if summary is newer
-    if needs_regeneration(name, 'prompt'):
+    # Step 2: Generate icon prompt if missing OR forced
+    if force_downstream or not has_icon_prompt(name):
         summary = load_summary(name)
         if not summary:
             return
@@ -568,40 +622,69 @@ async def process_website_async(name: str, url: str) -> None:
         try:
             icon_prompt = await generate_icon_description_async(name, summary)
             save_icon_prompt(name, icon_prompt)
+            force_downstream = True
         except Exception as e:
             print(f"[{name}] Failed to generate icon prompt: {e}")
             return
 
-    # Step 3: Generate JPG if needed OR if prompt is newer (run in thread pool)
+    # Step 3: Generate JPG if missing OR forced
     jpg_path = get_icon_jpg_path(name)
-    if needs_regeneration(name, 'jpg'):
+    if force_downstream or not has_icon_jpg(name):
         icon_prompt = load_icon_prompt(name)
         if not icon_prompt:
             return
         print(f"[{name}] Generating JPG...")
         update_website(name, icon_status="generating")
+
+        # Generate to temp file, then atomic swap
+        temp_jpg = jpg_path.with_suffix(".jpg.tmp")
         loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, generate_image_sync, icon_prompt, jpg_path)
-        if not success:
+        success = await loop.run_in_executor(None, generate_image_sync, icon_prompt, temp_jpg)
+
+        if not success or not temp_jpg.exists():
             print(f"[{name}] Failed to generate JPG")
+            update_website(name, icon_status="failed")
+            if temp_jpg.exists():
+                temp_jpg.unlink()
+            return
+
+        # Atomic swap - old jpg stays until new one is ready
+        if not atomic_swap(temp_jpg, jpg_path):
+            print(f"[{name}] Failed to swap JPG")
             update_website(name, icon_status="failed")
             return
 
-    # Step 4: Generate PNG if needed OR if jpg is newer (run in thread pool)
+        force_downstream = True
+
+    # Step 4: Generate PNG if missing OR forced
     png_path = get_icon_path(name)
-    if needs_regeneration(name, 'png'):
+    if force_downstream or not has_icon(name):
         if not has_icon_jpg(name):
             return
         print(f"[{name}] Removing background...")
+
+        # Generate to temp file, then atomic swap
+        temp_png = png_path.with_suffix(".png.tmp")
         loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, remove_background_sync, jpg_path, png_path)
-        if success:
-            update_website(name, icon_path=str(png_path), icon_status="ready")
-            increment_change_version()
-        else:
+        success = await loop.run_in_executor(None, remove_background_sync, jpg_path, temp_png)
+
+        if not success or not temp_png.exists():
             print(f"[{name}] Failed to remove background")
             update_website(name, icon_status="failed")
+            if temp_png.exists():
+                temp_png.unlink()
+            return
+
+        # Atomic swap - old png stays until new one is ready
+        if not atomic_swap(temp_png, png_path):
+            print(f"[{name}] Failed to swap PNG")
+            update_website(name, icon_status="failed")
+            return
+
+        update_website(name, icon_path=str(png_path), icon_status="ready")
+        increment_change_version()
     else:
+        # Ensure status is ready if PNG exists
         website = get_website(name)
         if website and website.get("icon_status") != "ready":
             update_website(name, icon_status="ready", icon_path=str(png_path))

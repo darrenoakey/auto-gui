@@ -14,7 +14,6 @@ from html_checker import check_port_returns_html
 from icon_generator import (
     get_change_version,
     has_icon,
-    needs_regeneration,
     queue_icon_generation,
     start_icon_worker,
     stop_icon_worker,
@@ -85,16 +84,10 @@ async def scan_and_update_processes(trigger_icons: bool = True):
             workdir=proc.get("workdir"),
         )
 
-        # Queue icon generation if HTML and (icon doesn't exist OR needs regeneration)
-        if trigger_icons and is_html:
-            needs_work = (
-                not has_icon(name) or
-                needs_regeneration(name, 'prompt') or
-                needs_regeneration(name, 'jpg') or
-                needs_regeneration(name, 'png')
-            )
-            if needs_work:
-                queue_icon_generation(name, is_website=False)
+        # Queue icon generation if HTML and icon doesn't exist
+        # (no timestamp checks - only generate if files are missing)
+        if trigger_icons and is_html and not has_icon(name):
+            queue_icon_generation(name, is_website=False)
 
     # Handle processes that are visible but not currently running
     for proc in get_visible_html_processes():
@@ -107,17 +100,11 @@ async def scan_and_update_processes(trigger_icons: bool = True):
                 # Completely removed from auto - hide it
                 mark_process_invisible(proc["name"])
 
-    # Queue website icons
+    # Queue website icons (only if missing - no timestamp checks)
     if trigger_icons:
         for website in list_websites():
             wname = website["name"]
-            needs_work = (
-                not has_icon(wname) or
-                needs_regeneration(wname, 'prompt') or
-                needs_regeneration(wname, 'jpg') or
-                needs_regeneration(wname, 'png')
-            )
-            if needs_work:
+            if not has_icon(wname):
                 queue_icon_generation(wname, is_website=True)
 
     update_last_scan()

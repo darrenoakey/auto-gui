@@ -22,16 +22,18 @@ local/                  # Runtime artifacts (gitignored)
 
 ## Key Design Decisions
 
-### Cascading Idempotent Icon Generation
-The icon generator uses a 4-step **cascading** idempotent pipeline with timestamp-based regeneration:
+### Cascading Icon Generation (No Timestamps)
+The icon generator uses a 4-step **cascading** pipeline. NO timestamp checking - only checks if files exist:
 1. Summary file → created if missing (uses Claude Agent SDK)
-2. Icon prompt file → created if missing OR if summary is newer
-3. JPG file → created if missing OR if prompt is newer
-4. PNG file → created if missing OR if JPG is newer
+2. Icon prompt file → created if missing (or if step 1 ran)
+3. JPG file → created if missing (or if step 2 ran)
+4. PNG file → created if missing (or if step 3 ran)
 
-**To regenerate an icon**: Just delete its `*_icon_prompt.txt` file. The old images stay visible until new ones are ready (no deletion needed).
+**Key design principle**: If any step runs, ALL downstream steps run (`force_downstream` boolean passed through the chain).
 
-**Critical**: No deletion code in auto-gui. Cascading regeneration handles updates automatically.
+**To regenerate an icon**: Delete the `*_icon_prompt.txt` file. Summary stays, but prompt/jpg/png regenerate.
+
+**Atomic swap**: Image files are generated to `.tmp` files, then atomically swapped in. The old icon stays visible until the new one is completely ready. This ensures there's never a moment without a valid icon.
 
 ### Background Icon Worker
 Icon generation runs in a **separate background worker**, completely decoupled from the main server:
@@ -78,3 +80,4 @@ All tests are in `src/*_test.py` files. Run with `pytest src/`.
 - Process list is sorted alphabetically - sorting happens both server-side (`get_all_visible_items`) and client-side (JS rebuilds list on each poll)
 - Dead vs removed: processes still in auto's state.json but not running are "dead" (shown with ✕), processes completely removed from auto are hidden
 - Popout button uses event.target check in `handleButtonClick()` to distinguish clicks on the ↗ from clicks on the main button
+- `generate_image` tool doesn't overwrite - it creates numbered files. We use `.tmp` files and atomic swap to avoid this issue.
