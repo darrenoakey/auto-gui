@@ -529,7 +529,8 @@ async def process_app_async(name: str, port: Optional[int], workdir: Optional[st
         update_process(name, icon_status="generating")
 
         # Generate to temp file, then atomic swap
-        temp_jpg = jpg_path.with_suffix(".jpg.tmp")
+        # Use .tmp.jpg (not .jpg.tmp) so generate_image doesn't add another .jpg
+        temp_jpg = jpg_path.with_name(f"{jpg_path.stem}.tmp.jpg")
         loop = asyncio.get_event_loop()
         success = await loop.run_in_executor(None, generate_image_sync, icon_prompt, temp_jpg)
 
@@ -556,7 +557,7 @@ async def process_app_async(name: str, port: Optional[int], workdir: Optional[st
         print(f"[{name}] Removing background...")
 
         # Generate to temp file, then atomic swap
-        temp_png = png_path.with_suffix(".png.tmp")
+        temp_png = png_path.with_name(f"{png_path.stem}.tmp.png")
         loop = asyncio.get_event_loop()
         success = await loop.run_in_executor(None, remove_background_sync, jpg_path, temp_png)
 
@@ -637,7 +638,8 @@ async def process_website_async(name: str, url: str) -> None:
         update_website(name, icon_status="generating")
 
         # Generate to temp file, then atomic swap
-        temp_jpg = jpg_path.with_suffix(".jpg.tmp")
+        # Use .tmp.jpg (not .jpg.tmp) so generate_image doesn't add another .jpg
+        temp_jpg = jpg_path.with_name(f"{jpg_path.stem}.tmp.jpg")
         loop = asyncio.get_event_loop()
         success = await loop.run_in_executor(None, generate_image_sync, icon_prompt, temp_jpg)
 
@@ -664,7 +666,7 @@ async def process_website_async(name: str, url: str) -> None:
         print(f"[{name}] Removing background...")
 
         # Generate to temp file, then atomic swap
-        temp_png = png_path.with_suffix(".png.tmp")
+        temp_png = png_path.with_name(f"{png_path.stem}.tmp.png")
         loop = asyncio.get_event_loop()
         success = await loop.run_in_executor(None, remove_background_sync, jpg_path, temp_png)
 
