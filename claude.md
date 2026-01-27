@@ -81,3 +81,4 @@ All tests are in `src/*_test.py` files. Run with `pytest src/`.
 - Dead vs removed: processes still in auto's state.json but not running are "dead" (shown with ✕), processes completely removed from auto are hidden
 - Popout button uses event.target check in `handleButtonClick()` to distinguish clicks on the ↗ from clicks on the main button
 - `generate_image` tool doesn't overwrite - it creates numbered files. We use `.tmp` files and atomic swap to avoid this issue.
+- `generate_image` enforces `.jpg`/`.jpeg` extensions - if output path doesn't end in these, it ADDS `.jpg`. So temp files must be named `name.tmp.jpg` (not `name.jpg.tmp`) or the file gets created at an unexpected path and existence checks fail.
