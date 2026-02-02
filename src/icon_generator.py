@@ -307,7 +307,8 @@ Write ONLY the summary, nothing else. Keep it under 100 words."""
         prompt=prompt,
         options=ClaudeAgentOptions(
             allowed_tools=[],
-            permission_mode="bypassPermissions"
+            permission_mode="bypassPermissions",
+            cwd=get_project_root(),  # Explicit cwd to avoid inheriting from process
         )
     ):
         if isinstance(message, AssistantMessage):
@@ -333,7 +334,8 @@ Write ONLY the summary, nothing else. Keep it under 100 words."""
         prompt=prompt,
         options=ClaudeAgentOptions(
             allowed_tools=["WebFetch"],
-            permission_mode="bypassPermissions"
+            permission_mode="bypassPermissions",
+            cwd=get_project_root(),  # Explicit cwd to avoid inheriting from process
         )
     ):
         if isinstance(message, AssistantMessage):
@@ -382,7 +384,8 @@ Respond with ONLY the object description (1 sentence describing the 3D object), 
         prompt=prompt,
         options=ClaudeAgentOptions(
             allowed_tools=[],
-            permission_mode="bypassPermissions"
+            permission_mode="bypassPermissions",
+            cwd=get_project_root(),  # Explicit cwd to avoid inheriting from process
         )
     ):
         if isinstance(message, AssistantMessage):

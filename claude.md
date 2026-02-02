@@ -45,6 +45,8 @@ Icon generation runs in a **separate background worker**, completely decoupled f
 ### Claude Agent SDK (NOT raw Anthropic API)
 Always use `claude_agent_sdk` for programmatic AI - it uses ambient authentication from Claude Code, no API keys needed. See `~/.claude/skills/ai/skill.md`.
 
+**CRITICAL**: Always specify `cwd=get_project_root()` in ClaudeAgentOptions when running in a daemon process. The SDK spawns a claude subprocess that inherits the working directory. If the process was started by `auto` from a directory that becomes unavailable (external drive, temp dir, etc.), the SDK fails with "The current working directory was deleted". Using an explicit, code-relative cwd avoids this.
+
 ### Server Trigger Logic
 The server triggers icon generation based on file existence (`has_icon(name)`), NOT state.json `icon_status`. This ensures proper idempotent behavior.
 
