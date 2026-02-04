@@ -6,7 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -20,6 +20,7 @@ from icon_generator import (
 )
 from process_scanner import get_registered_process_names, scan_processes
 from state_manager import (
+    StateError,
     get_all_visible_items,
     get_icons_dir,
     get_last_scan,
@@ -171,6 +172,15 @@ templates = Jinja2Templates(directory=str(templates_dir))
 
 import os
 SERVER_PID = os.getpid()
+
+
+@app.exception_handler(StateError)
+async def state_error_handler(_request: Request, exc: StateError):
+    """Handle state file errors with a clear error message."""
+    return PlainTextResponse(
+        f"State File Error\n\n{exc}\n\nTry: auto -q restart auto-gui",
+        status_code=503,
+    )
 
 
 @app.get("/", response_class=HTMLResponse)

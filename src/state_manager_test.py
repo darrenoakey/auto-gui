@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from state_manager import (
+    StateError,
     _load_state_file,
     _save_state_file,
     add_website,
@@ -257,3 +258,61 @@ class TestGetAllVisibleItems:
         result = get_all_visible_items()
         assert len(result) == 1
         assert result[0]["name"] == "html"
+
+
+class TestStateError:
+    def test_raises_on_json_corruption(self, temp_state_dir):
+        state_path = get_state_path()
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text("{ not valid json }")
+        with pytest.raises(StateError) as exc_info:
+            _load_state_file()
+        assert "corrupted" in str(exc_info.value).lower()
+        assert "invalid JSON" in str(exc_info.value)
+
+    def test_raises_on_permission_error(self, temp_state_dir):
+        state_path = get_state_path()
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text('{"processes": {}}')
+        with patch("builtins.open", side_effect=PermissionError("Operation not permitted")):
+            with pytest.raises(StateError) as exc_info:
+                _load_state_file()
+        assert "Permission denied" in str(exc_info.value)
+        assert "macOS sandbox" in str(exc_info.value)
+
+    def test_error_message_includes_recovery_hint(self, temp_state_dir):
+        state_path = get_state_path()
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text('{"processes": {}}')
+        with patch("builtins.open", side_effect=PermissionError("test")):
+            with pytest.raises(StateError) as exc_info:
+                _load_state_file()
+        assert "auto -q restart auto-gui" in str(exc_info.value)
+
+
+class TestSmokeTest:
+    """Smoke tests to verify the real state file is accessible."""
+
+    def test_real_state_file_readable(self):
+        """Verify we can read the actual project state file.
+
+        This catches permission issues that would cause 500 errors in production.
+        """
+        state_path = get_state_path()
+        if state_path.exists():
+            state = load_state()
+            assert isinstance(state, dict)
+            assert "processes" in state
+
+    def test_real_state_file_writable(self, tmp_path):
+        """Verify we can write to the state directory.
+
+        Uses a temp file in the same directory to avoid modifying real state.
+        """
+        state_path = get_state_path()
+        test_file = state_path.parent / ".write_test"
+        try:
+            test_file.write_text("test")
+            assert test_file.read_text() == "test"
+        finally:
+            test_file.unlink(missing_ok=True)

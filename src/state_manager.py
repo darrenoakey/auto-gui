@@ -25,20 +25,47 @@ def get_icons_dir() -> Path:
     return icons_dir
 
 
+class StateError(Exception):
+    """Raised when state file operations fail."""
+
+
 def _load_state_file() -> dict:
-    """Reads the state file from disk or returns default structure."""
+    """Reads the state file from disk or returns default structure.
+
+    Raises:
+        StateError: If the file exists but cannot be read (permissions, corruption).
+    """
     state_path = get_state_path()
+    default_state = {"processes": {}, "websites": {}, "last_scan": None}
+
     if not state_path.exists():
-        return {"processes": {}, "websites": {}, "last_scan": None}
-    with open(state_path, "r") as f:
-        data = json.load(f)
-        if "processes" not in data:
-            data["processes"] = {}
-        if "websites" not in data:
-            data["websites"] = {}
-        if "last_scan" not in data:
-            data["last_scan"] = None
-        return data
+        return default_state
+
+    try:
+        with open(state_path, "r") as f:
+            data = json.load(f)
+            if "processes" not in data:
+                data["processes"] = {}
+            if "websites" not in data:
+                data["websites"] = {}
+            if "last_scan" not in data:
+                data["last_scan"] = None
+            return data
+    except PermissionError as e:
+        raise StateError(
+            f"Permission denied reading state file: {state_path}. "
+            f"This may be a macOS sandbox issue. Try restarting with 'auto -q restart auto-gui'. "
+            f"Original error: {e}"
+        ) from e
+    except json.JSONDecodeError as e:
+        raise StateError(
+            f"State file corrupted (invalid JSON): {state_path}. "
+            f"You may need to delete it and restart. Original error: {e}"
+        ) from e
+    except OSError as e:
+        raise StateError(
+            f"Cannot read state file: {state_path}. Original error: {e}"
+        ) from e
 
 
 def _save_state_file(state_data: dict) -> None:
