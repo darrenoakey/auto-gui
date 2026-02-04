@@ -84,3 +84,4 @@ All tests are in `src/*_test.py` files. Run with `pytest src/`.
 - Popout button uses event.target check in `handleButtonClick()` to distinguish clicks on the ↗ from clicks on the main button
 - `generate_image` tool doesn't overwrite - it creates numbered files. We use `.tmp` files and atomic swap to avoid this issue.
 - `generate_image` enforces `.jpg`/`.jpeg` extensions - if output path doesn't end in these, it ADDS `.jpg`. So temp files must be named `name.tmp.jpg` (not `name.jpg.tmp`) or the file gets created at an unexpected path and existence checks fail.
+- **State file permission errors**: macOS sandbox can cause transient `PermissionError` on launchd-spawned processes accessing files on external drives. The `StateError` exception provides clear recovery hints (`auto -q restart auto-gui`). Smoke tests in `state_manager_test.py` verify accessibility.
