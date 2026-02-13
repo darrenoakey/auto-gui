@@ -53,6 +53,9 @@ The server triggers icon generation based on file existence (`has_icon(name)`), 
 ### HTML Detection
 `html_checker.py` requires both HTTP 200 status AND actual HTML structure in body (`<!doctype html` or `<html`). This filters out API servers and error pages.
 
+### URL Routing
+`GET /{name}` serves the same `index.html` with `selected_process` set, enabling direct URL navigation and refresh persistence. The single-segment `{name}` doesn't conflict with `/api/processes` (multi-segment) or `/static`/`/icons` (mounted StaticFiles take priority). Frontend uses `pushState`/`popState` for browser history integration.
+
 ### is_html Persistence
 Once a process is identified as `is_html: true`, it **stays that way forever** - never rechecked or downgraded. This prevents GUI apps from disappearing if they're temporarily unavailable during a scan. Non-HTML processes continue to be checked (they might become GUI apps). A GUI app only disappears when completely removed from auto.
 
@@ -70,6 +73,8 @@ Once a process is identified as `is_html: true`, it **stays that way forever** -
 
 All tests are in `src/*_test.py` files. Run with `pytest src/`.
 
+**E2E smoke tests** (`TestSmokeE2E` in `server_test.py`) use Playwright against the live server at localhost:2000. They auto-skip if the server isn't running. Each test saves a screenshot to `local/smoke_*.png` for visual verification.
+
 ## Gotchas
 
 - Filter out "auto-gui" from its own process list (SELF_NAME constant)
@@ -84,4 +89,5 @@ All tests are in `src/*_test.py` files. Run with `pytest src/`.
 - Popout button uses event.target check in `handleButtonClick()` to distinguish clicks on the ↗ from clicks on the main button
 - `generate_image` tool doesn't overwrite - it creates numbered files. We use `.tmp` files and atomic swap to avoid this issue.
 - `generate_image` enforces `.jpg`/`.jpeg` extensions - if output path doesn't end in these, it ADDS `.jpg`. So temp files must be named `name.tmp.jpg` (not `name.jpg.tmp`) or the file gets created at an unexpected path and existence checks fail.
+- `SCAN_INTERVAL` is 30 seconds (not 10 minutes) — dead/alive detection should be responsive
 - **State file permission errors**: macOS sandbox can cause transient `PermissionError` on launchd-spawned processes accessing files on external drives. The `StateError` exception provides clear recovery hints (`auto -q restart auto-gui`). Smoke tests in `state_manager_test.py` verify accessibility.
