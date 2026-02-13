@@ -53,6 +53,7 @@
         // Server PID for detecting restarts
         window.SERVER_PID = {{ server_pid }};
         window.CHANGE_VERSION = 0;
+        window.SELECTED_PROCESS = {{ selected_process | tojson }};
     </script>
     <script src="/static/js/main.js"></script>
 </body>

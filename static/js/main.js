@@ -39,9 +39,31 @@ function handleButtonClick(event, name, port, url, isWebsite) {
 }
 
 /**
+ * Show the welcome screen and clear current selection
+ */
+function showWelcome() {
+    const welcome = document.getElementById('welcome');
+    if (welcome) {
+        welcome.style.display = '';
+    }
+
+    // Hide all iframes
+    document.querySelectorAll('.iframe-container').forEach(container => {
+        container.classList.remove('active');
+    });
+
+    // Clear button states
+    document.querySelectorAll('.process-button').forEach(button => {
+        button.classList.remove('active');
+    });
+
+    currentProcess = null;
+}
+
+/**
  * Show a process or website iframe, creating it if necessary
  */
-function showProcess(name, port, url, isWebsite) {
+function showProcess(name, port, url, isWebsite, skipPush) {
     const content = document.getElementById('content');
     const welcome = document.getElementById('welcome');
 
@@ -89,6 +111,11 @@ function showProcess(name, port, url, isWebsite) {
     // Show the container
     container.classList.add('active');
     currentProcess = name;
+
+    // Update URL unless we're restoring from popstate/initial load
+    if (!skipPush) {
+        history.pushState({process: name}, '', '/' + name);
+    }
 }
 
 /**
@@ -169,6 +196,12 @@ function updateProcessList(processes) {
     // Sort processes alphabetically
     processes.sort((a, b) => a.name.localeCompare(b.name));
 
+    // If selected process disappeared from the list, go back to welcome
+    if (currentProcess && !currentProcessNames.has(currentProcess)) {
+        showWelcome();
+        history.pushState({}, '', '/');
+    }
+
     // Remove iframes for processes that no longer exist
     document.querySelectorAll('.process-button').forEach(button => {
         const name = button.dataset.name;
@@ -242,5 +275,36 @@ function startPolling() {
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
+    // Set initial history state for the current URL
+    if (window.SELECTED_PROCESS) {
+        history.replaceState({process: window.SELECTED_PROCESS}, '', '/' + window.SELECTED_PROCESS);
+        // Find the matching button and activate that process
+        const button = document.querySelector(`[data-name="${window.SELECTED_PROCESS}"]`);
+        if (button) {
+            const port = button.dataset.port;
+            const url = button.dataset.url;
+            const isWebsite = button.dataset.isWebsite === 'true';
+            showProcess(window.SELECTED_PROCESS, port, url, isWebsite, true);
+        }
+    } else {
+        history.replaceState({}, '', '/');
+    }
+
     startPolling();
+});
+
+// Handle browser back/forward navigation
+window.addEventListener('popstate', (event) => {
+    if (event.state && event.state.process) {
+        const name = event.state.process;
+        const button = document.querySelector(`[data-name="${name}"]`);
+        if (button) {
+            const port = button.dataset.port;
+            const url = button.dataset.url;
+            const isWebsite = button.dataset.isWebsite === 'true';
+            showProcess(name, port, url, isWebsite, true);
+        }
+    } else {
+        showWelcome();
+    }
 });

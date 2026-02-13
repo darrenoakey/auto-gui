@@ -36,7 +36,7 @@ from state_manager import (
 
 
 # Scan interval in seconds
-SCAN_INTERVAL = 600  # 10 minutes
+SCAN_INTERVAL = 30  # 30 seconds
 
 # Process name to exclude (self)
 SELF_NAME = "auto-gui"
@@ -195,6 +195,7 @@ async def index(request: Request):
             "processes": items,
             "last_scan": last_scan,
             "server_pid": SERVER_PID,
+            "selected_process": None,
         },
     )
 
@@ -217,3 +218,20 @@ async def api_scan():
     """Trigger a manual process scan."""
     await scan_and_update_processes()
     return {"status": "ok", "last_scan": get_last_scan()}
+
+
+@app.get("/{name}", response_class=HTMLResponse)
+async def process_page(request: Request, name: str):
+    """Render the dashboard with a specific process selected via URL."""
+    items = get_all_visible_items()
+    last_scan = get_last_scan()
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {
+            "processes": items,
+            "last_scan": last_scan,
+            "server_pid": SERVER_PID,
+            "selected_process": name,
+        },
+    )
