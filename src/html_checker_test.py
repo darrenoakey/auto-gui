@@ -1,4 +1,6 @@
 """Tests for html_checker module."""
+import ssl
+
 import httpx
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -157,6 +159,83 @@ def test_check_port_returns_html_sync():
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
         result = check_port_returns_html_sync(8080)
+        assert result is True
+
+
+@pytest.mark.asyncio
+async def test_check_port_returns_html_https_fallback():
+    """Test that HTTPS is tried when HTTP fails."""
+    call_count = 0
+
+    async def mock_get(url: str):
+        nonlocal call_count
+        call_count += 1
+
+        # First call is HTTP (returns 400)
+        if "http://" in url:
+            return make_response(400, "text/html", "Bad Request")
+        # Second call is HTTPS (returns 200 with HTML)
+        elif "https://" in url:
+            return make_response(
+                200,
+                "text/html",
+                "<!DOCTYPE html><html><body>Secure</body></html>",
+            )
+
+    mock_client = AsyncMock()
+    mock_client.get = mock_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
+        result = await check_port_returns_html(8900)
+        assert result is True
+        assert call_count == 2  # Tried both HTTP and HTTPS
+
+
+@pytest.mark.asyncio
+async def test_check_port_returns_html_https_only():
+    """Test that HTTPS works when HTTP throws connection error."""
+    async def mock_get(url: str):
+        # HTTP fails with connection error
+        if "http://" in url:
+            raise httpx.ConnectError("Connection refused")
+        # HTTPS works
+        elif "https://" in url:
+            return make_response(
+                200,
+                "text/html; charset=utf-8",
+                "<html><head><title>Secure Site</title></head></html>",
+            )
+
+    mock_client = AsyncMock()
+    mock_client.get = mock_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
+        result = await check_port_returns_html(8443)
+        assert result is True
+
+
+@pytest.mark.asyncio
+async def test_check_port_client_certificate_required_returns_true():
+    """Test that HTTPS requiring client certificate is assumed to be a GUI."""
+    async def mock_get(url: str):
+        # HTTP fails
+        if "http://" in url:
+            return make_response(400, "text/plain", "Bad Request")
+        # HTTPS requires client certificate
+        elif "https://" in url:
+            raise ssl.SSLError("[SSL: TLSV13_ALERT_CERTIFICATE_REQUIRED] tlsv13 alert certificate required")
+
+    mock_client = AsyncMock()
+    mock_client.get = mock_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
+        result = await check_port_returns_html(8900)
         assert result is True
 
 
