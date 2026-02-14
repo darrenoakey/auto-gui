@@ -51,7 +51,7 @@ Always use `claude_agent_sdk` for programmatic AI - it uses ambient authenticati
 The server triggers icon generation based on file existence (`has_icon(name)`), NOT state.json `icon_status`. This ensures proper idempotent behavior.
 
 ### HTML Detection
-`html_checker.py` requires both HTTP 200 status AND actual HTML structure in body (`<!doctype html` or `<html`). This filters out API servers and error pages.
+`html_checker.py` tries both HTTP and HTTPS, requiring HTTP 200 status AND actual HTML structure in body (`<!doctype html` or `<html`). This filters out API servers and error pages. Special case: if HTTPS requires a client certificate (`CERTIFICATE_REQUIRED`), we assume it's a GUI and return True (most client-cert services are web dashboards).
 
 ### URL Routing
 `GET /{name}` serves the same `index.html` with `selected_process` set, enabling direct URL navigation and refresh persistence. The single-segment `{name}` doesn't conflict with `/api/processes` (multi-segment) or `/static`/`/icons` (mounted StaticFiles take priority). Frontend uses `pushState`/`popState` for browser history integration.
