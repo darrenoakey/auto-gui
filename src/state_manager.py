@@ -102,6 +102,7 @@ def update_process(
     workdir: Optional[str] = None,
     description: Optional[str] = None,
     is_dead: Optional[bool] = None,
+    protocol: Optional[str] = None,
 ) -> dict:
     """
     Updates or creates a process entry.
@@ -121,6 +122,7 @@ def update_process(
             "workdir": None,
             "description": None,
             "is_dead": False,
+            "protocol": "http",
         }
 
     process = state["processes"][name]
@@ -141,6 +143,8 @@ def update_process(
         process["description"] = description
     if is_dead is not None:
         process["is_dead"] = is_dead
+    if protocol is not None:
+        process["protocol"] = protocol
 
     process["last_seen"] = datetime.now().isoformat()
 

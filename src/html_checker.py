@@ -8,7 +8,7 @@ import ssl
 import httpx
 
 
-async def check_port_returns_html(port: int, timeout: float = 5.0) -> bool:
+async def check_port_returns_html(port: int, timeout: float = 5.0) -> tuple[bool, str | None]:
     """
     Checks if the given port returns a usable HTML GUI.
 
@@ -20,7 +20,9 @@ async def check_port_returns_html(port: int, timeout: float = 5.0) -> bool:
     Special case: If HTTPS requires a client certificate, we assume it's a GUI
     and return True (most client-cert-protected services are GUIs).
 
-    Returns True if the port serves a usable HTML GUI, False otherwise.
+    Returns tuple of (is_html, protocol) where:
+    - is_html: True if the port serves a usable HTML GUI, False otherwise
+    - protocol: "http" or "https" if is_html is True, None if False
     """
     # Try HTTP first (most common), then HTTPS
     for scheme in ["http", "https"]:
@@ -47,29 +49,29 @@ async def check_port_returns_html(port: int, timeout: float = 5.0) -> bool:
                 body = response.text.lower()
                 has_html = "<!doctype html" in body or "<html" in body
                 if has_html:
-                    return True
+                    return (True, scheme)
 
         except ssl.SSLError as e:
             # Client certificate required - assume it's a GUI
             if "CERTIFICATE_REQUIRED" in str(e):
-                return True
+                return (True, scheme)
             continue
         except (httpx.RequestError, httpx.HTTPStatusError):
             continue
 
-    return False
+    return (False, None)
 
 
-def check_port_returns_html_sync(port: int, timeout: float = 5.0) -> bool:
+def check_port_returns_html_sync(port: int, timeout: float = 5.0) -> tuple[bool, str | None]:
     """Synchronous wrapper for check_port_returns_html."""
     return asyncio.run(check_port_returns_html(port, timeout))
 
 
-async def check_multiple_ports(ports: list[int], timeout: float = 5.0) -> dict[int, bool]:
+async def check_multiple_ports(ports: list[int], timeout: float = 5.0) -> dict[int, tuple[bool, str | None]]:
     """
     Checks multiple ports concurrently.
 
-    Returns a dict mapping port numbers to whether they return HTML.
+    Returns a dict mapping port numbers to (is_html, protocol) tuples.
     """
     tasks = [check_port_returns_html(port, timeout) for port in ports]
     results = await asyncio.gather(*tasks)

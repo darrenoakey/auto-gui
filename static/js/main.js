@@ -19,23 +19,23 @@ const REQUIRED_SUCCESSES = 2;  // Require 2 successful polls before refreshing
 /**
  * Open a process or website in a new browser window
  */
-function openInNewWindow(name, port, url, isWebsite) {
-    const targetUrl = isWebsite ? url : `http://localhost:${port}/`;
+function openInNewWindow(name, port, url, isWebsite, protocol) {
+    const targetUrl = isWebsite ? url : `${protocol || 'http'}://localhost:${port}/`;
     window.open(targetUrl, '_blank');
 }
 
 /**
  * Handle button click - check if popout button was clicked
  */
-function handleButtonClick(event, name, port, url, isWebsite) {
+function handleButtonClick(event, name, port, url, isWebsite, protocol) {
     // Check if the click was on the popout button
     if (event.target.classList.contains('popout-button')) {
         event.stopPropagation();
-        openInNewWindow(name, port, url, isWebsite);
+        openInNewWindow(name, port, url, isWebsite, protocol);
         return;
     }
     // Otherwise, show the process in iframe
-    showProcess(name, port, url, isWebsite);
+    showProcess(name, port, url, isWebsite, protocol);
 }
 
 /**
@@ -63,7 +63,7 @@ function showWelcome() {
 /**
  * Show a process or website iframe, creating it if necessary
  */
-function showProcess(name, port, url, isWebsite, skipPush) {
+function showProcess(name, port, url, isWebsite, protocol, skipPush) {
     const content = document.getElementById('content');
     const welcome = document.getElementById('welcome');
 
@@ -97,7 +97,7 @@ function showProcess(name, port, url, isWebsite, skipPush) {
 
         const iframe = document.createElement('iframe');
         // Use URL for websites, localhost:port for processes
-        iframe.src = isWebsite ? url : `http://localhost:${port}/`;
+        iframe.src = isWebsite ? url : `${protocol || 'http'}://localhost:${port}/`;
         iframe.title = name;
         iframe.onload = () => {
             container.classList.remove('loading');
@@ -223,6 +223,7 @@ function updateProcessList(processes) {
         const url = process.url || '';
         const description = process.description || '';
         const isDead = process.is_dead || false;
+        const protocol = process.protocol || 'http';
 
         // Always create fresh button to ensure correct structure
         const button = document.createElement('button');
@@ -232,7 +233,8 @@ function updateProcessList(processes) {
         button.dataset.url = url;
         button.dataset.isWebsite = isWebsite ? 'true' : 'false';
         button.dataset.isDead = isDead ? 'true' : 'false';
-        button.onclick = (e) => handleButtonClick(e, process.name, port, url, isWebsite);
+        button.dataset.protocol = protocol;
+        button.onclick = (e) => handleButtonClick(e, process.name, port, url, isWebsite, protocol);
         button.title = description;
 
         button.innerHTML = `
@@ -284,7 +286,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const port = button.dataset.port;
             const url = button.dataset.url;
             const isWebsite = button.dataset.isWebsite === 'true';
-            showProcess(window.SELECTED_PROCESS, port, url, isWebsite, true);
+            const protocol = button.dataset.protocol || 'http';
+            showProcess(window.SELECTED_PROCESS, port, url, isWebsite, protocol, true);
         }
     } else {
         history.replaceState({}, '', '/');
@@ -302,7 +305,8 @@ window.addEventListener('popstate', (event) => {
             const port = button.dataset.port;
             const url = button.dataset.url;
             const isWebsite = button.dataset.isWebsite === 'true';
-            showProcess(name, port, url, isWebsite, true);
+            const protocol = button.dataset.protocol || 'http';
+            showProcess(name, port, url, isWebsite, protocol, true);
         }
     } else {
         showWelcome();

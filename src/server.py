@@ -72,8 +72,11 @@ async def scan_and_update_processes(trigger_icons: bool = True):
         # Only check HTML for processes not already known to be GUI apps.
         if existing and existing.get("is_html"):
             is_html = True
+            protocol = existing.get("protocol", "http")
         else:
-            is_html = await check_port_returns_html(port)
+            is_html, protocol = await check_port_returns_html(port)
+            if protocol is None:
+                protocol = "http"  # Default fallback
 
         # Update state - process is running so is_dead=False
         update_process(
@@ -83,6 +86,7 @@ async def scan_and_update_processes(trigger_icons: bool = True):
             visible=True,
             is_dead=False,
             workdir=proc.get("workdir"),
+            protocol=protocol,
         )
 
         # Queue icon generation if HTML and icon doesn't exist

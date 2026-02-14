@@ -120,8 +120,8 @@ class TestScanAndUpdateProcesses:
             patch("server.get_visible_html_processes", return_value=[]),
             patch("server.update_last_scan"),
         ):
-            # html-app serves HTML, api-app does not
-            mock_check.side_effect = [True, False]
+            # html-app serves HTML on http, api-app does not
+            mock_check.side_effect = [(True, "http"), (False, None)]
 
             from server import scan_and_update_processes
             await scan_and_update_processes()
@@ -129,14 +129,16 @@ class TestScanAndUpdateProcesses:
             # Both processes should be updated
             assert mock_update.call_count == 2
 
-            # Verify html-app was updated with is_html=True
+            # Verify html-app was updated with is_html=True and protocol="http"
             calls = mock_update.call_args_list
             html_call = next(c for c in calls if c.kwargs.get("name") == "html-app")
             assert html_call.kwargs["is_html"] is True
+            assert html_call.kwargs["protocol"] == "http"
 
             # Verify api-app was updated with is_html=False
             api_call = next(c for c in calls if c.kwargs.get("name") == "api-app")
             assert api_call.kwargs["is_html"] is False
+            assert api_call.kwargs["protocol"] == "http"  # Defaults to http
 
     @pytest.mark.asyncio
     async def test_marks_missing_processes_invisible(self, mock_state):

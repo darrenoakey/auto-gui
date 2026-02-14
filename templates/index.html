@@ -19,7 +19,8 @@
                     data-url="{{ process.url or '' }}"
                     data-is-website="{{ 'true' if process.is_website else 'false' }}"
                     data-is-dead="{{ 'true' if process.is_dead else 'false' }}"
-                    onclick="handleButtonClick(event, '{{ process.name }}', '{{ process.port or '' }}', '{{ process.url or '' }}', {{ 'true' if process.is_website else 'false' }})"
+                    data-protocol="{{ process.protocol or 'http' }}"
+                    onclick="handleButtonClick(event, '{{ process.name }}', '{{ process.port or '' }}', '{{ process.url or '' }}', {{ 'true' if process.is_website else 'false' }}, '{{ process.protocol or 'http' }}')"
                     title="{{ process.description or '' }}"
                 >
                     {% if process.is_dead %}<span class="dead-indicator" title="Process not running">✕</span>{% endif %}

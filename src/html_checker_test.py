@@ -36,8 +36,9 @@ async def test_check_port_returns_html_true():
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
-        result = await check_port_returns_html(8080)
-        assert result is True
+        is_html, protocol = await check_port_returns_html(8080)
+        assert is_html is True
+        assert protocol == "http"
 
 
 @pytest.mark.asyncio
@@ -51,8 +52,9 @@ async def test_check_port_returns_html_false_for_json():
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
-        result = await check_port_returns_html(8080)
-        assert result is False
+        is_html, protocol = await check_port_returns_html(8080)
+        assert is_html is False
+        assert protocol is None
 
 
 @pytest.mark.asyncio
@@ -64,8 +66,9 @@ async def test_check_port_returns_html_false_on_error():
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
-        result = await check_port_returns_html(9999)
-        assert result is False
+        is_html, protocol = await check_port_returns_html(9999)
+        assert is_html is False
+        assert protocol is None
 
 
 @pytest.mark.asyncio
@@ -83,8 +86,9 @@ async def test_check_port_returns_html_false_for_404():
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
-        result = await check_port_returns_html(8080)
-        assert result is False
+        is_html, protocol = await check_port_returns_html(8080)
+        assert is_html is False
+        assert protocol is None
 
 
 @pytest.mark.asyncio
@@ -102,8 +106,9 @@ async def test_check_port_returns_html_false_for_501():
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
-        result = await check_port_returns_html(8080)
-        assert result is False
+        is_html, protocol = await check_port_returns_html(8080)
+        assert is_html is False
+        assert protocol is None
 
 
 @pytest.mark.asyncio
@@ -121,8 +126,9 @@ async def test_check_port_returns_html_false_for_non_html_body():
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
-        result = await check_port_returns_html(8080)
-        assert result is False
+        is_html, protocol = await check_port_returns_html(8080)
+        assert is_html is False
+        assert protocol is None
 
 
 @pytest.mark.asyncio
@@ -140,8 +146,9 @@ async def test_check_port_returns_html_case_insensitive():
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
-        result = await check_port_returns_html(8080)
-        assert result is True
+        is_html, protocol = await check_port_returns_html(8080)
+        assert is_html is True
+        assert protocol == "http"
 
 
 def test_check_port_returns_html_sync():
@@ -158,8 +165,9 @@ def test_check_port_returns_html_sync():
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
-        result = check_port_returns_html_sync(8080)
-        assert result is True
+        is_html, protocol = check_port_returns_html_sync(8080)
+        assert is_html is True
+        assert protocol == "http"
 
 
 @pytest.mark.asyncio
@@ -188,8 +196,9 @@ async def test_check_port_returns_html_https_fallback():
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
-        result = await check_port_returns_html(8900)
-        assert result is True
+        is_html, protocol = await check_port_returns_html(8900)
+        assert is_html is True
+        assert protocol == "https"
         assert call_count == 2  # Tried both HTTP and HTTPS
 
 
@@ -214,8 +223,9 @@ async def test_check_port_returns_html_https_only():
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
-        result = await check_port_returns_html(8443)
-        assert result is True
+        is_html, protocol = await check_port_returns_html(8443)
+        assert is_html is True
+        assert protocol == "https"
 
 
 @pytest.mark.asyncio
@@ -235,8 +245,9 @@ async def test_check_port_client_certificate_required_returns_true():
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
-        result = await check_port_returns_html(8900)
-        assert result is True
+        is_html, protocol = await check_port_returns_html(8900)
+        assert is_html is True
+        assert protocol == "https"
 
 
 @pytest.mark.asyncio
@@ -259,4 +270,4 @@ async def test_check_multiple_ports():
 
     with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
         result = await check_multiple_ports([8080, 9000, 3000])
-        assert result == {8080: True, 9000: False, 3000: True}
+        assert result == {8080: (True, "http"), 9000: (False, None), 3000: (True, "http")}
