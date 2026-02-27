@@ -1,6 +1,6 @@
 """
 Icon generator for auto-gui.
-Generates app summaries and icons using Claude Agent SDK and generate_image.
+Generates app summaries and icons using agent-sdk and generate_image.
 
 Icon generation runs in a separate background worker, completely decoupled from
 the main server. Items needing icons are added to a queue, and a worker processes
@@ -17,7 +17,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
+from agent_sdk import agent, Tier
 
 from state_manager import (
     get_icons_dir,
@@ -35,6 +35,11 @@ REMOVE_BACKGROUND = Path.home() / "bin" / "remove-background"
 
 # Global version counter for change notifications
 _change_version = 0
+
+# Retry behavior for transient Claude SDK rate limit stream events
+RATE_LIMIT_MAX_RETRIES = 5
+RATE_LIMIT_INITIAL_BACKOFF_SECONDS = 1.0
+RATE_LIMIT_MAX_BACKOFF_SECONDS = 30.0
 
 # Icon generation queue - items are (name, is_website) tuples
 _icon_queue: asyncio.Queue = None
@@ -278,9 +283,40 @@ def find_readme(workdir: Optional[str]) -> Optional[str]:
     return None
 
 
+def is_rate_limit_event_error(error: Exception) -> bool:
+    """Returns True if an exception indicates a transient rate-limit stream event."""
+    return "rate_limit_event" in str(error)
+
+
+async def query_text_with_backoff(prompt: str) -> str:
+    """
+    Runs an agent query and returns the response text.
+    Retries with exponential backoff for transient rate_limit_event errors.
+    """
+    attempt = 0
+    backoff_seconds = RATE_LIMIT_INITIAL_BACKOFF_SECONDS
+
+    while True:
+        try:
+            response = await agent.ask(prompt, tier=Tier.HIGH)
+            return response.text.strip()
+        except Exception as error:
+            if not is_rate_limit_event_error(error) or attempt >= RATE_LIMIT_MAX_RETRIES:
+                raise
+
+            attempt += 1
+            sleep_seconds = min(backoff_seconds, RATE_LIMIT_MAX_BACKOFF_SECONDS)
+            print(
+                f"[agent] rate_limit_event; retrying in {sleep_seconds:.1f}s "
+                f"(attempt {attempt}/{RATE_LIMIT_MAX_RETRIES})"
+            )
+            await asyncio.sleep(sleep_seconds)
+            backoff_seconds = min(backoff_seconds * 2, RATE_LIMIT_MAX_BACKOFF_SECONDS)
+
+
 async def generate_summary_async(name: str, port: Optional[int], workdir: Optional[str]) -> str:
     """
-    Generates a summary for an app using Claude Agent SDK.
+    Generates a summary for an app using agent-sdk.
     """
     # Gather context
     context_parts = [f"Process name: {name}"]
@@ -302,21 +338,7 @@ async def generate_summary_async(name: str, port: Optional[int], workdir: Option
 
 Write ONLY the summary, nothing else. Keep it under 100 words."""
 
-    response_text = ""
-    async for message in query(
-        prompt=prompt,
-        options=ClaudeAgentOptions(
-            allowed_tools=[],
-            permission_mode="bypassPermissions",
-            cwd=get_project_root(),  # Explicit cwd to avoid inheriting from process
-        )
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    response_text += block.text
-
-    return response_text.strip()
+    return await query_text_with_backoff(prompt)
 
 
 async def generate_summary_for_website_async(name: str, url: str) -> str:
@@ -329,21 +351,7 @@ The website is named "{name}".
 
 Write ONLY the summary, nothing else. Keep it under 100 words."""
 
-    response_text = ""
-    async for message in query(
-        prompt=prompt,
-        options=ClaudeAgentOptions(
-            allowed_tools=["WebFetch"],
-            permission_mode="bypassPermissions",
-            cwd=get_project_root(),  # Explicit cwd to avoid inheriting from process
-        )
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    response_text += block.text
-
-    return response_text.strip()
+    return await query_text_with_backoff(prompt)
 
 
 async def generate_icon_description_async(name: str, summary: str) -> str:
@@ -379,22 +387,9 @@ BAD examples (DO NOT do these):
 
 Respond with ONLY the object description (1 sentence describing the 3D object), nothing else. Do NOT mention the background."""
 
-    response_text = ""
-    async for message in query(
-        prompt=prompt,
-        options=ClaudeAgentOptions(
-            allowed_tools=[],
-            permission_mode="bypassPermissions",
-            cwd=get_project_root(),  # Explicit cwd to avoid inheriting from process
-        )
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    response_text += block.text
+    ai_description = await query_text_with_backoff(prompt)
 
     # Add mandatory suffix with strict background and rendering requirements
-    ai_description = response_text.strip()
     full_prompt = f"""{ai_description}
 
 MANDATORY REQUIREMENTS:

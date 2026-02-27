@@ -2,92 +2,84 @@
 
 # Auto-GUI
 
-A web dashboard for viewing and managing auto-managed processes. Displays running processes with their status, ports, and auto-generated icons in a clean dual-theme interface.
+A clean, beautiful web dashboard that lets you see all your background services at a glance. If you use [auto](https://github.com/darrenoakey/auto) to manage long-running processes, Auto-GUI gives them a home — complete with status indicators, clickable links, and auto-generated icons.
 
-## Installation
+## Getting Started
+
+Install the dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Usage
-
-### Start the Dashboard
+Start the dashboard:
 
 ```bash
 ./run serve
 ```
 
-The dashboard will be available at `http://localhost:2000`.
+Open [http://localhost:2000](http://localhost:2000) in your browser — that's it!
 
-You can specify a different host or port:
+## Features
 
-```bash
-./run serve --host 127.0.0.1 --port 8080
-```
+### Live Process Dashboard
 
-### Manage Websites
+Auto-GUI automatically discovers every process managed by `auto` and displays them in a sortable list. Each process shows:
 
-Add a website to the dashboard manually:
+- **Status** — whether it's running or stopped
+- **Port** — if it's listening on one
+- **Quick link** — click to open any web-based service directly
+
+The dashboard polls for changes in the background, so you never need to refresh.
+
+### Auto-Generated Icons
+
+Each service gets its own unique icon, generated automatically. This makes it easy to visually scan your dashboard and find what you're looking for.
+
+### Manual Websites
+
+Not everything runs through `auto`. You can pin any URL to your dashboard:
 
 ```bash
 ./run add "My App" https://myapp.example.com
+./run add "Documentation" https://docs.example.com
+./run add "Staging" https://staging.example.com
 ```
 
-Remove a website:
+See what you've added:
+
+```bash
+./run list
+```
+
+Remove one you no longer need:
 
 ```bash
 ./run remove "My App"
 ```
 
-List all manually-added websites:
+### Dual Themes
+
+The dashboard ships with two themes — a dark space theme and a light nature theme. Switch between them to suit your mood or environment.
+
+### Direct Links
+
+Every service has its own URL (e.g., `http://localhost:2000/my-service`). You can bookmark individual services, and the page works correctly on refresh.
+
+## Configuration
+
+By default, the server runs on all interfaces at port 2000. You can change this:
 
 ```bash
-./run list
+./run serve --host 127.0.0.1 --port 8080
 ```
 
-### Run Tests
+## Tips and Tricks
 
-```bash
-./run test
-```
+- **Running as a service** — Register Auto-GUI itself with `auto` so it starts automatically on login. Use `auto -q restart auto-gui` to restart it when needed.
 
-Run specific tests by pattern:
+- **Bookmark your favorites** — Since each process has its own URL, you can bookmark `http://localhost:2000/my-api` to jump straight to a specific service.
 
-```bash
-./run test -k "test_html_checker"
-```
+- **Pin external services** — Use `./run add` to put frequently-visited internal tools, staging environments, or documentation sites right alongside your local services.
 
-### Run Quality Checks
-
-```bash
-./run check
-```
-
-## Examples
-
-Start the server and open the dashboard:
-
-```bash
-./run serve
-# Open http://localhost:2000 in your browser
-```
-
-Add multiple websites to track:
-
-```bash
-./run add "Production API" https://api.example.com
-./run add "Staging Site" https://staging.example.com
-./run add "Documentation" https://docs.example.com
-```
-
-View what's configured:
-
-```bash
-./run list
-# Output:
-# Manual websites:
-#   Production API: https://api.example.com
-#   Staging Site: https://staging.example.com
-#   Documentation: https://docs.example.com
-```
+- **Run quality checks** — If you're contributing, `./run check` runs the full test suite in one step.

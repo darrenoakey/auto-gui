@@ -1,12 +1,13 @@
 """Tests for icon_generator module."""
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from icon_generator import (
     find_readme,
     generate_icon_for_process,
+    generate_summary_async,
     get_change_version,
     get_icon_path,
     get_summary_path,
@@ -96,3 +97,72 @@ class TestGenerateIconForProcess:
         with patch("icon_generator.get_process", return_value=None):
             result = await generate_icon_for_process("nonexistent")
             assert result is False
+
+
+class TestAgentRateLimitBackoff:
+    @pytest.mark.asyncio
+    async def test_generate_summary_retries_with_exponential_backoff(self):
+        attempts = {"count": 0}
+
+        async def fake_ask(prompt, *, tier=None):
+            attempts["count"] += 1
+            if attempts["count"] < 4:
+                raise Exception("Unknown message type: rate_limit_event")
+            response = MagicMock()
+            response.text = "Recovered summary"
+            return response
+
+        sleep_mock = AsyncMock()
+        with (
+            patch("icon_generator.agent.ask", side_effect=fake_ask),
+            patch("icon_generator.asyncio.sleep", sleep_mock),
+            patch("icon_generator.RATE_LIMIT_MAX_RETRIES", 5),
+            patch("icon_generator.RATE_LIMIT_INITIAL_BACKOFF_SECONDS", 1.0),
+            patch("icon_generator.RATE_LIMIT_MAX_BACKOFF_SECONDS", 30.0),
+        ):
+            summary = await generate_summary_async("test-app", None, None)
+
+        assert summary == "Recovered summary"
+        assert attempts["count"] == 4
+        assert [call.args[0] for call in sleep_mock.await_args_list] == [1.0, 2.0, 4.0]
+
+    @pytest.mark.asyncio
+    async def test_generate_summary_does_not_retry_non_rate_limit_errors(self):
+        attempts = {"count": 0}
+
+        async def fake_ask(prompt, *, tier=None):
+            attempts["count"] += 1
+            raise Exception("upstream unavailable")
+
+        sleep_mock = AsyncMock()
+        with (
+            patch("icon_generator.agent.ask", side_effect=fake_ask),
+            patch("icon_generator.asyncio.sleep", sleep_mock),
+        ):
+            with pytest.raises(Exception, match="upstream unavailable"):
+                await generate_summary_async("test-app", None, None)
+
+        assert attempts["count"] == 1
+        assert sleep_mock.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_generate_summary_stops_after_max_rate_limit_retries(self):
+        attempts = {"count": 0}
+
+        async def fake_ask(prompt, *, tier=None):
+            attempts["count"] += 1
+            raise Exception("Unknown message type: rate_limit_event")
+
+        sleep_mock = AsyncMock()
+        with (
+            patch("icon_generator.agent.ask", side_effect=fake_ask),
+            patch("icon_generator.asyncio.sleep", sleep_mock),
+            patch("icon_generator.RATE_LIMIT_MAX_RETRIES", 2),
+            patch("icon_generator.RATE_LIMIT_INITIAL_BACKOFF_SECONDS", 0.5),
+            patch("icon_generator.RATE_LIMIT_MAX_BACKOFF_SECONDS", 30.0),
+        ):
+            with pytest.raises(Exception, match="rate_limit_event"):
+                await generate_summary_async("test-app", None, None)
+
+        assert attempts["count"] == 3
+        assert [call.args[0] for call in sleep_mock.await_args_list] == [0.5, 1.0]

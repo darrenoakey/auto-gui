@@ -15,12 +15,12 @@ class TestParseAutoPsOutput:
     def test_parses_standard_output(self):
         output = """NAME                       PID   PORT
 claude_server             2842  40123
-daz-cad-2                19444   8765
+daz-cad                19444   8765
 web-summary               2867   8889"""
         result = parse_auto_ps_output(output)
         assert len(result) == 3
         assert result[0] == {"name": "claude_server", "pid": 2842, "port": 40123}
-        assert result[1] == {"name": "daz-cad-2", "pid": 19444, "port": 8765}
+        assert result[1] == {"name": "daz-cad", "pid": 19444, "port": 8765}
         assert result[2] == {"name": "web-summary", "pid": 2867, "port": 8889}
 
     def test_handles_dash_port(self):
