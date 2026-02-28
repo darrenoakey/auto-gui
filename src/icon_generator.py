@@ -1,6 +1,6 @@
 """
 Icon generator for auto-gui.
-Generates app summaries and icons using agent-sdk and generate_image.
+Generates app summaries and icons using daz-agent-sdk and generate_image.
 
 Icon generation runs in a separate background worker, completely decoupled from
 the main server. Items needing icons are added to a queue, and a worker processes
@@ -17,7 +17,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from agent_sdk import agent, Tier
+from daz_agent_sdk import agent, Tier
 
 from state_manager import (
     get_icons_dir,
@@ -316,7 +316,7 @@ async def query_text_with_backoff(prompt: str) -> str:
 
 async def generate_summary_async(name: str, port: Optional[int], workdir: Optional[str]) -> str:
     """
-    Generates a summary for an app using agent-sdk.
+    Generates a summary for an app using daz-agent-sdk.
     """
     # Gather context
     context_parts = [f"Process name: {name}"]
