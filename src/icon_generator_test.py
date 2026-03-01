@@ -104,7 +104,7 @@ class TestAgentRateLimitBackoff:
     async def test_generate_summary_retries_with_exponential_backoff(self):
         attempts = {"count": 0}
 
-        async def fake_ask(prompt, *, tier=None):
+        async def fake_ask(prompt, *, tier=None, cwd=None):
             attempts["count"] += 1
             if attempts["count"] < 4:
                 raise Exception("Unknown message type: rate_limit_event")
@@ -130,7 +130,7 @@ class TestAgentRateLimitBackoff:
     async def test_generate_summary_does_not_retry_non_rate_limit_errors(self):
         attempts = {"count": 0}
 
-        async def fake_ask(prompt, *, tier=None):
+        async def fake_ask(prompt, *, tier=None, cwd=None):
             attempts["count"] += 1
             raise Exception("upstream unavailable")
 
@@ -149,7 +149,7 @@ class TestAgentRateLimitBackoff:
     async def test_generate_summary_stops_after_max_rate_limit_retries(self):
         attempts = {"count": 0}
 
-        async def fake_ask(prompt, *, tier=None):
+        async def fake_ask(prompt, *, tier=None, cwd=None):
             attempts["count"] += 1
             raise Exception("Unknown message type: rate_limit_event")
 

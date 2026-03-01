@@ -1,6 +1,6 @@
 """
 Icon generator for auto-gui.
-Generates app summaries and icons using daz-agent-sdk and generate_image.
+Generates app summaries and icons using daz-agent-sdk.
 
 Icon generation runs in a separate background worker, completely decoupled from
 the main server. Items needing icons are added to a queue, and a worker processes
@@ -13,7 +13,6 @@ Design principles:
 - Generate to temp file, then swap atomically
 """
 import asyncio
-import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -28,10 +27,6 @@ from state_manager import (
     update_website,
 )
 
-
-# Path to image generation tools
-GENERATE_IMAGE = Path.home() / "bin" / "generate_image"
-REMOVE_BACKGROUND = Path.home() / "bin" / "remove-background"
 
 # Global version counter for change notifications
 _change_version = 0
@@ -171,11 +166,6 @@ def get_icon_prompt_path(name: str) -> Path:
     return get_local_dir() / f"{name}_icon_prompt.txt"
 
 
-def get_icon_jpg_path(name: str) -> Path:
-    """Returns path to intermediate JPG icon file."""
-    return get_icons_dir() / f"{name}.jpg"
-
-
 def has_summary(name: str) -> bool:
     """Checks if a summary exists."""
     return get_summary_path(name).exists()
@@ -184,11 +174,6 @@ def has_summary(name: str) -> bool:
 def has_icon_prompt(name: str) -> bool:
     """Checks if an icon prompt exists."""
     return get_icon_prompt_path(name).exists()
-
-
-def has_icon_jpg(name: str) -> bool:
-    """Checks if an intermediate JPG icon exists."""
-    return get_icon_jpg_path(name).exists()
 
 
 def has_icon(name: str) -> bool:
@@ -249,7 +234,9 @@ def load_summary(name: str) -> Optional[str]:
 
 
 def save_summary(name: str, summary: str) -> None:
-    """Saves a summary for a process."""
+    """Saves a summary for a process. Raises ValueError if summary is empty."""
+    if not summary or not summary.strip():
+        raise ValueError(f"[{name}] Refusing to save empty summary")
     path = get_summary_path(name)
     path.write_text(summary, encoding="utf-8")
 
@@ -298,8 +285,12 @@ async def query_text_with_backoff(prompt: str) -> str:
 
     while True:
         try:
-            response = await agent.ask(prompt, tier=Tier.HIGH)
-            return response.text.strip()
+            response = await agent.ask(prompt, tier=Tier.HIGH, cwd=get_project_root())
+            print(f"[agent] response.text={response.text!r:.200} model={response.model_used}")
+            text = response.text.strip()
+            if not text:
+                raise ValueError("AI returned empty response")
+            return text
         except Exception as error:
             if not is_rate_limit_event_error(error) or attempt >= RATE_LIMIT_MAX_RETRIES:
                 raise
@@ -336,7 +327,7 @@ async def generate_summary_async(name: str, port: Optional[int], workdir: Option
 
 {context}
 
-Write ONLY the summary, nothing else. Keep it under 100 words."""
+Write ONLY the summary, nothing else. Keep it under 100 words. You MUST produce a summary — if information is limited, summarize based on the process name alone."""
 
     return await query_text_with_backoff(prompt)
 
@@ -345,11 +336,11 @@ async def generate_summary_for_website_async(name: str, url: str) -> str:
     """
     Generates a summary for a website by asking Claude to visit it.
     """
-    prompt = f"""Visit this website and write a brief 1-2 sentence summary describing what it is about: {url}
+    prompt = f"""Write a brief 1-2 sentence summary of a website named "{name}" at URL {url}.
 
-The website is named "{name}".
+Do NOT visit or fetch the URL. Just infer what the site does from its name and URL.
 
-Write ONLY the summary, nothing else. Keep it under 100 words."""
+Write ONLY the summary text, nothing else. Keep it under 100 words."""
 
     return await query_text_with_backoff(prompt)
 
@@ -408,74 +399,23 @@ def save_icon_prompt(name: str, prompt: str) -> None:
     path.write_text(prompt, encoding="utf-8")
 
 
-def generate_image_sync(prompt: str, output_path: Path) -> bool:
+async def generate_icon_async(prompt: str, output_path: Path) -> bool:
     """
-    Calls generate_image to create an icon.
-    Synchronous. Writes to output_path (should be a temp path).
+    Calls agent.image to create an icon with transparent background.
+    Writes directly to output_path as a PNG.
     """
-    if not GENERATE_IMAGE.exists():
-        print(f"generate_image not found at {GENERATE_IMAGE}")
-        return False
-
-    cmd = [
-        str(GENERATE_IMAGE),
-        "--prompt", prompt,
-        "--width", "128",
-        "--height", "128",
-        "--output", str(output_path),
-    ]
-
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minute timeout
-        )
-        # Verify the file was actually created at the expected path
-        if result.returncode == 0 and output_path.exists():
-            return True
-        return False
+        result = await agent.image(prompt, width=128, height=128, output=str(output_path), transparent=True)
+        return output_path.exists()
     except Exception as e:
-        print(f"Image generation failed: {e}")
-        return False
-
-
-def remove_background_sync(input_path: Path, output_path: Path) -> bool:
-    """
-    Removes background from an image for transparency.
-    Synchronous. Writes to output_path (should be a temp path).
-    """
-    if not REMOVE_BACKGROUND.exists():
-        print(f"remove-background not found at {REMOVE_BACKGROUND}")
-        return False
-
-    cmd = [
-        str(REMOVE_BACKGROUND),
-        str(input_path),
-        str(output_path),
-    ]
-
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,  # 2 minute timeout
-        )
-        # Verify the file was actually created at the expected path
-        if result.returncode == 0 and output_path.exists():
-            return True
-        return False
-    except Exception as e:
-        print(f"Background removal failed: {e}")
+        print(f"Icon generation failed: {e}")
         return False
 
 
 async def process_app_async(name: str, port: Optional[int], workdir: Optional[str]) -> None:
     """
     Processes an app through cascading steps.
-    Steps: summary → icon_prompt → jpg → png
+    Steps: summary → icon_prompt → png (transparent, generated in one step)
 
     Design: NO timestamp checking. Only check if files exist.
     If any step runs, all downstream steps run (force_downstream).
@@ -517,50 +457,21 @@ async def process_app_async(name: str, port: Optional[int], workdir: Optional[st
             print(f"[{name}] Failed to generate icon prompt: {e}")
             return
 
-    # Step 3: Generate JPG if missing OR forced
-    jpg_path = get_icon_jpg_path(name)
-    if force_downstream or not has_icon_jpg(name):
+    # Step 3: Generate transparent PNG if missing OR forced
+    png_path = get_icon_path(name)
+    if force_downstream or not has_icon(name):
         icon_prompt = load_icon_prompt(name)
         if not icon_prompt:
             return
-        print(f"[{name}] Generating JPG...")
+        print(f"[{name}] Generating icon...")
         update_process(name, icon_status="generating")
 
         # Generate to temp file, then atomic swap
-        # Use .tmp.jpg (not .jpg.tmp) so generate_image doesn't add another .jpg
-        temp_jpg = jpg_path.with_name(f"{jpg_path.stem}.tmp.jpg")
-        loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, generate_image_sync, icon_prompt, temp_jpg)
-
-        if not success or not temp_jpg.exists():
-            print(f"[{name}] Failed to generate JPG")
-            update_process(name, icon_status="failed")
-            if temp_jpg.exists():
-                temp_jpg.unlink()
-            return
-
-        # Atomic swap - old jpg stays until new one is ready
-        if not atomic_swap(temp_jpg, jpg_path):
-            print(f"[{name}] Failed to swap JPG")
-            update_process(name, icon_status="failed")
-            return
-
-        force_downstream = True
-
-    # Step 4: Generate PNG if missing OR forced
-    png_path = get_icon_path(name)
-    if force_downstream or not has_icon(name):
-        if not has_icon_jpg(name):
-            return
-        print(f"[{name}] Removing background...")
-
-        # Generate to temp file, then atomic swap
         temp_png = png_path.with_name(f"{png_path.stem}.tmp.png")
-        loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, remove_background_sync, jpg_path, temp_png)
+        success = await generate_icon_async(icon_prompt, temp_png)
 
         if not success or not temp_png.exists():
-            print(f"[{name}] Failed to remove background")
+            print(f"[{name}] Failed to generate icon")
             update_process(name, icon_status="failed")
             if temp_png.exists():
                 temp_png.unlink()
@@ -584,7 +495,7 @@ async def process_app_async(name: str, port: Optional[int], workdir: Optional[st
 async def process_website_async(name: str, url: str) -> None:
     """
     Processes a website through cascading steps.
-    Steps: summary → icon_prompt → jpg → png
+    Steps: summary → icon_prompt → png (transparent, generated in one step)
 
     Design: NO timestamp checking. Only check if files exist.
     If any step runs, all downstream steps run (force_downstream).
@@ -626,50 +537,21 @@ async def process_website_async(name: str, url: str) -> None:
             print(f"[{name}] Failed to generate icon prompt: {e}")
             return
 
-    # Step 3: Generate JPG if missing OR forced
-    jpg_path = get_icon_jpg_path(name)
-    if force_downstream or not has_icon_jpg(name):
+    # Step 3: Generate transparent PNG if missing OR forced
+    png_path = get_icon_path(name)
+    if force_downstream or not has_icon(name):
         icon_prompt = load_icon_prompt(name)
         if not icon_prompt:
             return
-        print(f"[{name}] Generating JPG...")
+        print(f"[{name}] Generating icon...")
         update_website(name, icon_status="generating")
 
         # Generate to temp file, then atomic swap
-        # Use .tmp.jpg (not .jpg.tmp) so generate_image doesn't add another .jpg
-        temp_jpg = jpg_path.with_name(f"{jpg_path.stem}.tmp.jpg")
-        loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, generate_image_sync, icon_prompt, temp_jpg)
-
-        if not success or not temp_jpg.exists():
-            print(f"[{name}] Failed to generate JPG")
-            update_website(name, icon_status="failed")
-            if temp_jpg.exists():
-                temp_jpg.unlink()
-            return
-
-        # Atomic swap - old jpg stays until new one is ready
-        if not atomic_swap(temp_jpg, jpg_path):
-            print(f"[{name}] Failed to swap JPG")
-            update_website(name, icon_status="failed")
-            return
-
-        force_downstream = True
-
-    # Step 4: Generate PNG if missing OR forced
-    png_path = get_icon_path(name)
-    if force_downstream or not has_icon(name):
-        if not has_icon_jpg(name):
-            return
-        print(f"[{name}] Removing background...")
-
-        # Generate to temp file, then atomic swap
         temp_png = png_path.with_name(f"{png_path.stem}.tmp.png")
-        loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, remove_background_sync, jpg_path, temp_png)
+        success = await generate_icon_async(icon_prompt, temp_png)
 
         if not success or not temp_png.exists():
-            print(f"[{name}] Failed to remove background")
+            print(f"[{name}] Failed to generate icon")
             update_website(name, icon_status="failed")
             if temp_png.exists():
                 temp_png.unlink()
