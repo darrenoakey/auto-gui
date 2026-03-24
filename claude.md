@@ -87,6 +87,6 @@ All tests are in `src/*_test.py` files. Run with `pytest src/`.
 - Process list is sorted alphabetically - sorting happens both server-side (`get_all_visible_items`) and client-side (JS rebuilds list on each poll)
 - Dead vs removed: processes still in auto's state.json but not running are "dead" (shown with ✕), processes completely removed from auto are hidden
 - Popout button uses event.target check in `handleButtonClick()` to distinguish clicks on the ↗ from clicks on the main button
-- `agent.image()` with `transparent=True` generates PNG directly — no separate background removal step needed
+- `agent.image()` with `transparent=True` runs BiRefNet background removal. With `provider="spark"` this happens on the GPU server (cheap). With `provider="nano-banana-2"` it runs locally on CPU (very expensive — 63% CPU for batch icon generation). Always use spark for icon generation.
 - `SCAN_INTERVAL` is 30 seconds (not 10 minutes) — dead/alive detection should be responsive
 - **State file permission errors**: macOS sandbox can cause transient `PermissionError` on launchd-spawned processes accessing files on external drives. The `StateError` exception provides clear recovery hints (`auto -q restart auto-gui`). Smoke tests in `state_manager_test.py` verify accessibility.
