@@ -141,6 +141,32 @@ class TestScanAndUpdateProcesses:
             assert api_call.kwargs["protocol"] == "http"  # Defaults to http
 
     @pytest.mark.asyncio
+    async def test_rechecks_protocol_for_known_html_processes(self, mock_state):
+        """Protocol should be rechecked even for already-known HTML processes."""
+        mock_processes = [
+            {"name": "web-app", "port": 8443, "workdir": "/path/to/app"},
+        ]
+        existing_process = {"is_html": True, "protocol": "http"}
+
+        with (
+            patch("server.scan_processes", return_value=mock_processes),
+            patch("server.check_port_returns_html", new_callable=AsyncMock) as mock_check,
+            patch("server.get_process", return_value=existing_process),
+            patch("server.update_process") as mock_update,
+            patch("server.get_visible_html_processes", return_value=[]),
+            patch("server.update_last_scan"),
+        ):
+            # Process now serves HTTPS
+            mock_check.return_value = (True, "https")
+
+            from server import scan_and_update_processes
+            await scan_and_update_processes()
+
+            call = mock_update.call_args_list[0]
+            assert call.kwargs["is_html"] is True
+            assert call.kwargs["protocol"] == "https"
+
+    @pytest.mark.asyncio
     async def test_marks_missing_processes_invisible(self, mock_state):
         # Process was visible before but no longer running
         visible_process = {"name": "old-app", "port": 7000, "is_html": True, "visible": True}

@@ -18,7 +18,7 @@ from icon_generator import (
     start_icon_worker,
     stop_icon_worker,
 )
-from process_scanner import get_registered_process_names, scan_processes
+from process_scanner import scan_processes
 from state_manager import (
     StateError,
     get_all_visible_items,
@@ -28,10 +28,10 @@ from state_manager import (
     get_project_root,
     get_visible_html_processes,
     list_websites,
-    mark_process_dead,
     mark_process_invisible,
     update_last_scan,
     update_process,
+    update_website,
 )
 
 
@@ -42,18 +42,18 @@ SCAN_INTERVAL = 30  # 30 seconds
 SELF_NAME = "auto-gui"
 
 
-async def scan_and_update_processes(trigger_icons: bool = True):
+async def scan_and_update_processes(trigger_icons: bool = True, force_icons: bool = False):
     """Scans for processes and updates state.
 
     Args:
         trigger_icons: If True, trigger icon generation for items without icons.
                       Set to False during startup to avoid blocking.
+        force_icons: If True, ignore failure cooldown and retry failed items.
     """
-    processes = scan_processes()
+    # Run the blocking subprocess call in a thread to avoid freezing the event loop
+    loop = asyncio.get_event_loop()
+    processes = await loop.run_in_executor(None, scan_processes)
     current_names = set()
-
-    # Get all processes registered in auto (whether running or not)
-    registered_names = get_registered_process_names()
 
     for proc in processes:
         name = proc["name"]
@@ -69,10 +69,11 @@ async def scan_and_update_processes(trigger_icons: bool = True):
         existing = get_process(name)
 
         # Once a process is identified as HTML, it stays that way forever.
-        # Only check HTML for processes not already known to be GUI apps.
+        # But always recheck protocol - a service can switch HTTP <-> HTTPS.
         if existing and existing.get("is_html"):
             is_html = True
-            protocol = existing.get("protocol", "http")
+            _, detected_protocol = await check_port_returns_html(port)
+            protocol = detected_protocol or existing.get("protocol", "http")
         else:
             is_html, protocol = await check_port_returns_html(port)
             if protocol is None:
@@ -89,28 +90,32 @@ async def scan_and_update_processes(trigger_icons: bool = True):
             protocol=protocol,
         )
 
-        # Queue icon generation if HTML and icon doesn't exist
-        # (no timestamp checks - only generate if files are missing)
-        if trigger_icons and is_html and not has_icon(name):
-            queue_icon_generation(name, is_website=False)
+        # Icon queuing for running processes is handled below in the
+        # get_visible_html_processes() loop, which covers ALL visible HTML
+        # processes (running + dead) in one place.
 
     # Handle processes that are visible but not currently running
     for proc in get_visible_html_processes():
-        if proc["name"] not in current_names:
-            # Check if still registered in auto's state
-            if proc["name"] in registered_names:
-                # Still registered, just dead - mark as dead but keep visible
-                mark_process_dead(proc["name"])
-            else:
-                # Completely removed from auto - hide it
-                mark_process_invisible(proc["name"])
+        name = proc["name"]
+        if name not in current_names:
+            # Not running - hide it from the dashboard
+            mark_process_invisible(name)
+
+        # Queue icon generation for ANY visible HTML process without an icon,
+        # whether running or dead. Dead/stopped processes still need icons.
+        if trigger_icons and not has_icon(name):
+            queue_icon_generation(name, is_website=False, force=force_icons)
+        elif has_icon(name) and proc.get("icon_status") != "ready":
+            update_process(name, icon_status="ready")
 
     # Queue website icons (only if missing - no timestamp checks)
     if trigger_icons:
         for website in list_websites():
             wname = website["name"]
             if not has_icon(wname):
-                queue_icon_generation(wname, is_website=True)
+                queue_icon_generation(wname, is_website=True, force=force_icons)
+            elif website.get("icon_status") != "ready":
+                update_website(wname, icon_status="ready")
 
     update_last_scan()
 
@@ -219,8 +224,8 @@ async def api_processes():
 
 @app.post("/api/scan")
 async def api_scan():
-    """Trigger a manual process scan."""
-    await scan_and_update_processes()
+    """Trigger a manual process scan. Retries previously-failed icon generation."""
+    await scan_and_update_processes(force_icons=True)
     return {"status": "ok", "last_scan": get_last_scan()}
 
 

@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from icon_generator import (
+    FAILURE_COOLDOWN_SCANS,
+    MAX_CONSECUTIVE_FAILURES,
+    _failure_counts,
     find_readme,
+    generate_icon_async,
     generate_icon_for_process,
     generate_summary_async,
     get_change_version,
@@ -15,6 +19,7 @@ from icon_generator import (
     has_summary,
     increment_change_version,
     load_summary,
+    queue_icon_generation,
     save_summary,
 )
 
@@ -97,6 +102,89 @@ class TestGenerateIconForProcess:
         with patch("icon_generator.get_process", return_value=None):
             result = await generate_icon_for_process("nonexistent")
             assert result is False
+
+
+class TestGenerateIconAsync:
+    @pytest.mark.asyncio
+    async def test_generates_transparent_icon(self, tmp_path):
+        output_path = tmp_path / "icon.png"
+
+        async def fake_image(prompt, *, width, height, output, transparent, provider):
+            Path(output).write_bytes(b"png")
+            assert provider == "spark"
+            return MagicMock(path=Path(output))
+
+        with patch("icon_generator.agent.image", side_effect=fake_image):
+            result = await generate_icon_async("prompt", output_path)
+
+        assert result is True
+        assert output_path.read_bytes() == b"png"
+        assert output_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_image_generation_fails(self, tmp_path):
+        output_path = tmp_path / "icon.png"
+
+        with patch("icon_generator.agent.image", side_effect=RuntimeError("generation failed")):
+            result = await generate_icon_async("prompt", output_path)
+
+        assert result is False
+        assert not output_path.exists()
+
+
+class TestFailureCooldown:
+    def setup_method(self):
+        """Clear failure state before each test."""
+        _failure_counts.clear()
+
+    def test_queue_allows_first_attempt(self):
+        """Items with no failure history are queued normally."""
+        with patch("icon_generator.get_icon_queue") as mock_queue:
+            mock_q = MagicMock()
+            mock_queue.return_value = mock_q
+            queue_icon_generation("new-app")
+            mock_q.put_nowait.assert_called_once()
+
+    def test_queue_blocks_after_max_failures(self):
+        """Items that failed MAX_CONSECUTIVE_FAILURES times are blocked."""
+        _failure_counts[("bad-app", False)] = MAX_CONSECUTIVE_FAILURES
+        with patch("icon_generator.get_icon_queue") as mock_queue:
+            mock_q = MagicMock()
+            mock_queue.return_value = mock_q
+            queue_icon_generation("bad-app")
+            mock_q.put_nowait.assert_not_called()
+
+    def test_queue_allows_force_despite_failures(self):
+        """force=True bypasses the cooldown."""
+        _failure_counts[("bad-app", False)] = MAX_CONSECUTIVE_FAILURES
+        with patch("icon_generator.get_icon_queue") as mock_queue:
+            mock_q = MagicMock()
+            mock_queue.return_value = mock_q
+            queue_icon_generation("bad-app", force=True)
+            mock_q.put_nowait.assert_called_once()
+
+    def test_cooldown_expires_after_enough_scans(self):
+        """After FAILURE_COOLDOWN_SCANS cycles, item is retried."""
+        _failure_counts[("bad-app", False)] = MAX_CONSECUTIVE_FAILURES + FAILURE_COOLDOWN_SCANS
+        with patch("icon_generator.get_icon_queue") as mock_queue:
+            mock_q = MagicMock()
+            mock_queue.return_value = mock_q
+            queue_icon_generation("bad-app")
+            mock_q.put_nowait.assert_called_once()
+        # Counter should be reset
+        assert _failure_counts[("bad-app", False)] == 0
+
+
+class TestSaveSummaryRejectsEmpty:
+    def test_rejects_empty_string(self, tmp_path):
+        with patch("icon_generator.get_local_dir", return_value=tmp_path):
+            with pytest.raises(ValueError, match="empty summary"):
+                save_summary("test", "")
+
+    def test_rejects_whitespace_only(self, tmp_path):
+        with patch("icon_generator.get_local_dir", return_value=tmp_path):
+            with pytest.raises(ValueError, match="empty summary"):
+                save_summary("test", "   \n  ")
 
 
 class TestAgentRateLimitBackoff:

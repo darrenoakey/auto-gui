@@ -1,4 +1,5 @@
 """Tests for process_scanner module."""
+import subprocess
 from unittest.mock import patch
 
 from process_scanner import (
@@ -62,8 +63,14 @@ class TestRunAutoPs:
                 ["auto", "-q", "ps"],
                 capture_output=True,
                 text=True,
+                timeout=10,
             )
             assert result == "NAME PID PORT\ntest 123 8080"
+
+    def test_returns_empty_on_timeout(self):
+        with patch("process_scanner.subprocess.run", side_effect=subprocess.TimeoutExpired("auto", 10)):
+            result = run_auto_ps()
+            assert result == ""
 
 
 class TestGetAutoState:

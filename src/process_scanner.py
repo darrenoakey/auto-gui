@@ -57,13 +57,21 @@ def parse_auto_ps_output(output: str) -> list[dict]:
 
 
 def run_auto_ps() -> str:
-    """Runs 'auto -q ps' and returns the output."""
-    result = subprocess.run(
-        ["auto", "-q", "ps"],
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout
+    """Runs 'auto -q ps' and returns the output.
+
+    Uses a timeout to prevent blocking the caller indefinitely if auto hangs.
+    """
+    try:
+        result = subprocess.run(
+            ["auto", "-q", "ps"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.stdout
+    except subprocess.TimeoutExpired:
+        print("[process_scanner] auto -q ps timed out after 10s")
+        return ""
 
 
 def get_auto_state() -> dict:

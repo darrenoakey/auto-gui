@@ -35,11 +35,18 @@ _change_version = 0
 RATE_LIMIT_MAX_RETRIES = 5
 RATE_LIMIT_INITIAL_BACKOFF_SECONDS = 1.0
 RATE_LIMIT_MAX_BACKOFF_SECONDS = 30.0
+ICON_IMAGE_PROVIDER = "spark"
 
 # Icon generation queue - items are (name, is_website) tuples
 _icon_queue: asyncio.Queue = None
 _worker_task: asyncio.Task = None
 _queued_items: set = None  # Track items currently in queue to prevent duplicates
+
+# Track consecutive failures per item — prevents infinite 30s retry loops
+# Maps (name, is_website) -> failure count
+_failure_counts: dict = {}
+MAX_CONSECUTIVE_FAILURES = 3
+FAILURE_COOLDOWN_SCANS = 20  # Skip this many scan cycles after max failures (~10 min)
 
 
 def get_change_version() -> int:
@@ -68,6 +75,9 @@ async def icon_worker():
     Background worker that processes icon generation requests from the queue.
     Runs completely independently from the main server loop.
     Processes one item at a time to avoid overwhelming the system.
+
+    Transparent background deps are loaded lazily by the SDK on first use,
+    not eagerly at startup. This saves ~1GB of RAM when no icons need generating.
     """
     global _queued_items
     queue = get_icon_queue()
@@ -79,6 +89,7 @@ async def icon_worker():
             name, is_website = await queue.get()
             print(f"[icon_worker] Processing: {name} (website={is_website})")
 
+            item_key = (name, is_website)
             try:
                 if is_website:
                     await process_website_async(name, get_website(name).get("url", ""))
@@ -92,11 +103,31 @@ async def icon_worker():
                         )
             except Exception as e:
                 print(f"[icon_worker] Error processing {name}: {e}")
+                # Reset status so it doesn't stay stuck at "generating"
+                try:
+                    if is_website:
+                        update_website(name, icon_status="failed")
+                    else:
+                        update_process(name, icon_status="failed")
+                except Exception:
+                    pass
             finally:
                 queue.task_done()
                 # Remove from tracking set so it can be queued again if needed
                 if _queued_items is not None:
                     _queued_items.discard((name, is_website))
+
+            # Track success/failure by checking if icon was actually created
+            if has_icon(name):
+                _failure_counts.pop(item_key, None)
+            else:
+                count = _failure_counts.get(item_key, 0) + 1
+                _failure_counts[item_key] = count
+                if count >= MAX_CONSECUTIVE_FAILURES:
+                    print(
+                        f"[icon_worker] {name} failed {count} times, "
+                        f"backing off for ~{FAILURE_COOLDOWN_SCANS * 30}s"
+                    )
 
         except asyncio.CancelledError:
             print("[icon_worker] Shutting down")
@@ -121,19 +152,37 @@ def stop_icon_worker():
         _worker_task.cancel()
 
 
-def queue_icon_generation(name: str, is_website: bool = False):
+def queue_icon_generation(name: str, is_website: bool = False, force: bool = False):
     """
     Queues an item for icon generation.
     This is non-blocking and returns immediately.
     Prevents duplicates - won't queue if already in queue.
+    Backs off after repeated failures to avoid infinite retry loops.
+
+    Args:
+        force: If True, ignore failure cooldown (e.g. for manual scans).
     """
     global _queued_items
     queue = get_icon_queue()
 
-    # Check if already queued
     item = (name, is_website)
+
+    # Check if already queued
     if _queued_items is not None and item in _queued_items:
         return  # Already queued, skip silently
+
+    # Back off after repeated failures (unless forced)
+    if not force and item in _failure_counts:
+        count = _failure_counts[item]
+        if count >= MAX_CONSECUTIVE_FAILURES:
+            # Only retry every FAILURE_COOLDOWN_SCANS cycles
+            # Increment count as a scan counter; reset when it hits the threshold
+            _failure_counts[item] = count + 1
+            if count < MAX_CONSECUTIVE_FAILURES + FAILURE_COOLDOWN_SCANS:
+                return  # Still in cooldown
+            # Cooldown expired — reset and allow retry
+            _failure_counts[item] = 0
+            print(f"[icon_queue] Cooldown expired, retrying: {name}")
 
     try:
         queue.put_nowait(item)
@@ -402,10 +451,17 @@ def save_icon_prompt(name: str, prompt: str) -> None:
 async def generate_icon_async(prompt: str, output_path: Path) -> bool:
     """
     Calls agent.image to create an icon with transparent background.
-    Writes directly to output_path as a PNG.
+    Writes directly to output_path as a transparent PNG.
     """
     try:
-        result = await agent.image(prompt, width=128, height=128, output=str(output_path), transparent=True)
+        await agent.image(
+            prompt,
+            width=128,
+            height=128,
+            output=str(output_path),
+            transparent=True,
+            provider=ICON_IMAGE_PROVIDER,
+        )
         return output_path.exists()
     except Exception as e:
         print(f"Icon generation failed: {e}")
