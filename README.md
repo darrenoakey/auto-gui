@@ -83,3 +83,7 @@ By default, the server runs on all interfaces at port 2000. You can change this:
 - **Pin external services** — Use `./run add` to put frequently-visited internal tools, staging environments, or documentation sites right alongside your local services.
 
 - **Run quality checks** — If you're contributing, `./run check` runs the full test suite in one step.
+
+## License
+
+This project is licensed under [CC BY-NC 4.0](https://darren-static.waft.dev) - free to use and modify, but no commercial use without permission.
