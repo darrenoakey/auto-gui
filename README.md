@@ -86,4 +86,4 @@ By default, the server runs on all interfaces at port 2000. You can change this:
 
 ## License
 
-This project is licensed under [CC BY-NC 4.0](https://darren-static.waft.dev) - free to use and modify, but no commercial use without permission.
+This project is licensed under [CC BY-NC 4.0](https://darren-static.waft.dev/license) - free to use and modify, but no commercial use without permission.
