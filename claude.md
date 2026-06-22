@@ -88,5 +88,6 @@ All tests are in `src/*_test.py` files. Run with `pytest src/`.
 - Dead vs removed: processes still in auto's state.json but not running are "dead" (shown with ✕), processes completely removed from auto are hidden
 - Popout button uses event.target check in `handleButtonClick()` to distinguish clicks on the ↗ from clicks on the main button
 - The icon generator uses the mac mini image service at `http://10.0.0.46:8830` (`POST /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/image`). Do not switch icon generation back to `agent.image()` providers.
+- The mac mini service may return an RGB PNG with a checkerboard background even when `transparent: true`; keep `normalize_icon_png()` in the pipeline so saved dashboard icons are 128x128 RGBA with real alpha.
 - `SCAN_INTERVAL` is 30 seconds (not 10 minutes) — dead/alive detection should be responsive
 - **State file permission errors**: macOS sandbox can cause transient `PermissionError` on launchd-spawned processes accessing files on external drives. The `StateError` exception provides clear recovery hints (`auto -q restart auto-gui`). Smoke tests in `state_manager_test.py` verify accessibility.
