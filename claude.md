@@ -26,7 +26,7 @@ local/                  # Runtime artifacts (gitignored)
 The icon generator uses a 3-step **cascading** pipeline. NO timestamp checking - only checks if files exist:
 1. Summary file → created if missing (uses daz-agent-sdk)
 2. Icon prompt file → created if missing (or if step 1 ran)
-3. Transparent PNG → created if missing (or if step 2 ran), using `agent.image()` with `transparent=True`
+3. PNG → created if missing (or if step 2 ran), using the mac mini image generation service at `http://10.0.0.46:8830`
 
 **Key design principle**: If any step runs, ALL downstream steps run (`force_downstream` boolean passed through the chain).
 
@@ -40,7 +40,7 @@ The icon generator uses a 3-step **cascading** pipeline. NO timestamp checking -
 Icon generation runs in a **separate background worker**, completely decoupled from the main server:
 - Queue-based processing with duplicate prevention
 - Server startup doesn't trigger icon generation (deferred until server is fully running)
-- Uses `agent.image()` (async, non-blocking) for image generation with built-in background removal
+- Uses the mac mini image generation service for image generation via submit/poll/fetch job endpoints
 - One item processed at a time to avoid overwhelming the system
 
 ### daz-agent-sdk (NOT raw Anthropic API)
@@ -87,6 +87,6 @@ All tests are in `src/*_test.py` files. Run with `pytest src/`.
 - Process list is sorted alphabetically - sorting happens both server-side (`get_all_visible_items`) and client-side (JS rebuilds list on each poll)
 - Dead vs removed: processes still in auto's state.json but not running are "dead" (shown with ✕), processes completely removed from auto are hidden
 - Popout button uses event.target check in `handleButtonClick()` to distinguish clicks on the ↗ from clicks on the main button
-- `agent.image()` with `transparent=True` runs BiRefNet background removal. With `provider="spark"` this happens on the GPU server (cheap). With `provider="nano-banana-2"` it runs locally on CPU (very expensive — 63% CPU for batch icon generation). Always use spark for icon generation.
+- The icon generator uses the mac mini image service at `http://10.0.0.46:8830` (`POST /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/image`). Do not switch icon generation back to `agent.image()` providers.
 - `SCAN_INTERVAL` is 30 seconds (not 10 minutes) — dead/alive detection should be responsive
 - **State file permission errors**: macOS sandbox can cause transient `PermissionError` on launchd-spawned processes accessing files on external drives. The `StateError` exception provides clear recovery hints (`auto -q restart auto-gui`). Smoke tests in `state_manager_test.py` verify accessibility.

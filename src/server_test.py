@@ -1,7 +1,15 @@
 """Tests for server module."""
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
+
+
+def smoke_screenshot_path(filename: str) -> str:
+    """Returns a writable screenshot path under this checkout's local directory."""
+    path = Path(__file__).resolve().parents[1] / "local" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 @pytest.fixture
@@ -290,7 +298,7 @@ class TestSmokeE2E:
         assert page.locator("#welcome").is_visible()
         # No iframe should be active
         assert page.locator(".iframe-container.active").count() == 0
-        page.screenshot(path="/Volumes/T9/darrenoakey/src/auto-gui/local/smoke_index.png")
+        page.screenshot(path=smoke_screenshot_path("smoke_index.png"))
 
     def test_direct_url_selects_process(self, browser_context, first_process_name):
         """GET /{name} auto-selects that process and hides the welcome screen."""
@@ -306,7 +314,7 @@ class TestSmokeE2E:
         # The correct button should be active
         active_btn = page.locator(f'button.process-button.active[data-name="{first_process_name}"]')
         assert active_btn.count() == 1
-        page.screenshot(path="/Volumes/T9/darrenoakey/src/auto-gui/local/smoke_direct_url.png")
+        page.screenshot(path=smoke_screenshot_path("smoke_direct_url.png"))
 
     def test_click_updates_url(self, browser_context, first_process_name):
         """Clicking a process in the sidebar pushes the URL to /{name}."""
@@ -321,7 +329,7 @@ class TestSmokeE2E:
             timeout=5000,
         )
         assert page.url.endswith(f"/{first_process_name}")
-        page.screenshot(path="/Volumes/T9/darrenoakey/src/auto-gui/local/smoke_click_url.png")
+        page.screenshot(path=smoke_screenshot_path("smoke_click_url.png"))
 
     def test_back_button_returns_to_welcome(self, browser_context, first_process_name):
         """Browser back button navigates from /{name} back to welcome."""
@@ -343,7 +351,7 @@ class TestSmokeE2E:
         # Welcome should be visible again
         page.wait_for_selector("#welcome", state="visible", timeout=5000)
         assert page.locator("#welcome").is_visible()
-        page.screenshot(path="/Volumes/T9/darrenoakey/src/auto-gui/local/smoke_back_button.png")
+        page.screenshot(path=smoke_screenshot_path("smoke_back_button.png"))
 
     def test_refresh_preserves_selection(self, browser_context, first_process_name):
         """Refreshing on /{name} re-selects the same process."""
@@ -363,4 +371,4 @@ class TestSmokeE2E:
         active_btn = page.locator(f'button.process-button.active[data-name="{first_process_name}"]')
         assert active_btn.count() == 1
         assert not page.locator("#welcome").is_visible()
-        page.screenshot(path="/Volumes/T9/darrenoakey/src/auto-gui/local/smoke_refresh.png")
+        page.screenshot(path=smoke_screenshot_path("smoke_refresh.png"))

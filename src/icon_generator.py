@@ -13,10 +13,14 @@ Design principles:
 - Generate to temp file, then swap atomically
 """
 import asyncio
+from collections import Counter, deque
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from daz_agent_sdk import agent, Tier
+from PIL import Image
 
 from state_manager import (
     get_icons_dir,
@@ -35,7 +39,13 @@ _change_version = 0
 RATE_LIMIT_MAX_RETRIES = 5
 RATE_LIMIT_INITIAL_BACKOFF_SECONDS = 1.0
 RATE_LIMIT_MAX_BACKOFF_SECONDS = 30.0
-ICON_IMAGE_PROVIDER = "spark"
+ICON_IMAGE_SERVER_URL = "http://10.0.0.46:8830"
+ICON_IMAGE_WIDTH = 128
+ICON_IMAGE_HEIGHT = 128
+ICON_IMAGE_POLL_SECONDS = 3.0
+ICON_IMAGE_MAX_WAIT_SECONDS = 1800.0
+ICON_IMAGE_RESPONSE_LIMIT_BYTES = 25 * 1024 * 1024
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 # Icon generation queue - items are (name, is_website) tuples
 _icon_queue: asyncio.Queue = None
@@ -450,22 +460,170 @@ def save_icon_prompt(name: str, prompt: str) -> None:
 
 async def generate_icon_async(prompt: str, output_path: Path) -> bool:
     """
-    Calls agent.image to create an icon with transparent background.
-    Writes directly to output_path as a transparent PNG.
+    Calls the mac mini image generation service to create an icon.
+    Writes the generated PNG to output_path.
     """
     try:
-        await agent.image(
-            prompt,
-            width=128,
-            height=128,
-            output=str(output_path),
-            transparent=True,
-            provider=ICON_IMAGE_PROVIDER,
-        )
-        return output_path.exists()
+        image_data = await generate_icon_image_bytes(prompt)
+        output_path.write_bytes(image_data)
+        return output_path.exists() and output_path.read_bytes().startswith(PNG_SIGNATURE)
     except Exception as e:
         print(f"Icon generation failed: {e}")
         return False
+
+
+async def generate_icon_image_bytes(prompt: str) -> bytes:
+    """Submits, waits for, and fetches an icon image from the image service."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        job_id = await submit_image_job(client, prompt)
+        await wait_for_image_job(client, job_id)
+        image_data = await fetch_image_job(client, job_id)
+    if not image_data.startswith(PNG_SIGNATURE):
+        raise ValueError(f"image job {job_id} returned non-png data")
+    return normalize_icon_png(image_data)
+
+
+def normalize_icon_png(image_data: bytes) -> bytes:
+    """Returns a 128x128 RGBA PNG, removing connected checkerboard background when needed."""
+    with Image.open(BytesIO(image_data)) as source:
+        has_transparency = source.mode in {"RGBA", "LA"} or "transparency" in source.info
+        image = source.convert("RGBA")
+
+    if not has_transparency or not has_transparent_pixel(image):
+        image = remove_connected_checkerboard_background(image)
+
+    if image.size != (ICON_IMAGE_WIDTH, ICON_IMAGE_HEIGHT):
+        image = image.resize((ICON_IMAGE_WIDTH, ICON_IMAGE_HEIGHT), Image.Resampling.LANCZOS)
+
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
+def has_transparent_pixel(image: Image.Image) -> bool:
+    """Reports whether an RGBA image already has transparent pixels."""
+    return image.getchannel("A").getextrema()[0] < 255
+
+
+def remove_connected_checkerboard_background(image: Image.Image) -> Image.Image:
+    """Converts edge-connected checkerboard pixels to alpha while preserving interior icon pixels."""
+    background_colours = find_border_background_colours(image)
+    if not background_colours:
+        return image
+
+    width, height = image.size
+    pixels = image.load()
+    visited = bytearray(width * height)
+    queue = deque()
+
+    def add_if_background(x: int, y: int) -> None:
+        index = y * width + x
+        if visited[index] or not is_background_pixel(pixels[x, y], background_colours):
+            return
+        visited[index] = 1
+        queue.append((x, y))
+
+    for x in range(width):
+        add_if_background(x, 0)
+        add_if_background(x, height - 1)
+    for y in range(height):
+        add_if_background(0, y)
+        add_if_background(width - 1, y)
+
+    while queue:
+        x, y = queue.popleft()
+        pixels[x, y] = (pixels[x, y][0], pixels[x, y][1], pixels[x, y][2], 0)
+        if x > 0:
+            add_if_background(x - 1, y)
+        if x + 1 < width:
+            add_if_background(x + 1, y)
+        if y > 0:
+            add_if_background(x, y - 1)
+        if y + 1 < height:
+            add_if_background(x, y + 1)
+
+    return image
+
+
+def find_border_background_colours(image: Image.Image) -> list[tuple[int, int, int]]:
+    """Finds likely checkerboard colours from the image border."""
+    width, height = image.size
+    pixels = image.load()
+    samples = []
+    for x in range(width):
+        samples.append(pixels[x, 0][:3])
+        samples.append(pixels[x, height - 1][:3])
+    for y in range(height):
+        samples.append(pixels[0, y][:3])
+        samples.append(pixels[width - 1, y][:3])
+    return [colour for colour, _count in Counter(samples).most_common(3)]
+
+
+def is_background_pixel(pixel: tuple[int, int, int, int], colours: list[tuple[int, int, int]]) -> bool:
+    """Reports whether a pixel is close enough to one of the detected background colours."""
+    red, green, blue, _alpha = pixel
+    for colour in colours:
+        distance = (red - colour[0]) ** 2 + (green - colour[1]) ** 2 + (blue - colour[2]) ** 2
+        if distance <= 32**2:
+            return True
+    return False
+
+
+async def submit_image_job(client: httpx.AsyncClient, prompt: str) -> str:
+    """Submits one image generation job and returns its durable job id."""
+    response = await client.post(
+        f"{ICON_IMAGE_SERVER_URL}/jobs",
+        json={
+            "prompt": prompt,
+            "width": ICON_IMAGE_WIDTH,
+            "height": ICON_IMAGE_HEIGHT,
+            "transparent": True,
+        },
+    )
+    response.raise_for_status()
+    job_id = response.json().get("id", "").strip()
+    if not job_id:
+        raise ValueError("image server returned empty job id")
+    return job_id
+
+
+async def wait_for_image_job(client: httpx.AsyncClient, job_id: str) -> None:
+    """Polls the image service until the job finishes or fails."""
+    deadline = asyncio.get_running_loop().time() + ICON_IMAGE_MAX_WAIT_SECONDS
+    while True:
+        status = await get_image_job_status(client, job_id)
+        state = status.get("status")
+        if state == "done":
+            return
+        if state == "failed":
+            attempts = status.get("attempts", 0)
+            error = status.get("error", "")
+            raise RuntimeError(f"image job {job_id} failed after {attempts} attempts: {error}")
+        if state not in {"queued", "running"}:
+            raise RuntimeError(f"image job {job_id} returned unknown status {state!r}")
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError(f"image job {job_id} timed out after {ICON_IMAGE_MAX_WAIT_SECONDS:.0f}s")
+        await asyncio.sleep(ICON_IMAGE_POLL_SECONDS)
+
+
+async def get_image_job_status(client: httpx.AsyncClient, job_id: str) -> dict:
+    """Fetches image generation job status."""
+    response = await client.get(f"{ICON_IMAGE_SERVER_URL}/jobs/{job_id}")
+    response.raise_for_status()
+    return response.json()
+
+
+async def fetch_image_job(client: httpx.AsyncClient, job_id: str) -> bytes:
+    """Fetches generated PNG bytes for a completed image job."""
+    response = await client.get(f"{ICON_IMAGE_SERVER_URL}/jobs/{job_id}/image")
+    response.raise_for_status()
+    content_type = response.headers.get("content-type", "")
+    if "image/png" not in content_type.lower():
+        raise ValueError(f"image job {job_id} returned content type {content_type!r}")
+    image_data = response.content
+    if len(image_data) > ICON_IMAGE_RESPONSE_LIMIT_BYTES:
+        raise ValueError(f"image job {job_id} exceeded 25MiB response limit")
+    return image_data
 
 
 async def process_app_async(name: str, port: Optional[int], workdir: Optional[str]) -> None:
