@@ -132,6 +132,46 @@ async def test_check_port_returns_html_false_for_non_html_body():
 
 
 @pytest.mark.asyncio
+async def test_check_port_returns_html_fragment():
+    """Test that HTML fragments (without <!doctype> or <html>) are detected."""
+    mock_response = make_response(
+        200,
+        "text/html; charset=utf-8",
+        "<h1>Hello from Seed</h1><p>Evolving...</p>",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
+        is_html, protocol = await check_port_returns_html(8080)
+        assert is_html is True
+        assert protocol == "http"
+
+
+@pytest.mark.asyncio
+async def test_check_port_returns_html_div_fragment():
+    """Test that div-based HTML fragments are detected."""
+    mock_response = make_response(
+        200,
+        "text/html",
+        "<div id='app'>Loading...</div>",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("html_checker.httpx.AsyncClient", return_value=mock_client):
+        is_html, protocol = await check_port_returns_html(8080)
+        assert is_html is True
+        assert protocol == "http"
+
+
+@pytest.mark.asyncio
 async def test_check_port_returns_html_case_insensitive():
     """Test that content-type check is case insensitive."""
     mock_response = make_response(

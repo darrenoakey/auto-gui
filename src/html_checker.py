@@ -45,9 +45,15 @@ async def check_port_returns_html(port: int, timeout: float = 5.0) -> tuple[bool
                 if "text/html" not in content_type.lower():
                     continue
 
-                # Must contain actual HTML structure
+                # Must contain actual HTML structure (full document or fragment)
                 body = response.text.lower()
-                has_html = "<!doctype html" in body or "<html" in body
+                has_html = (
+                    "<!doctype html" in body
+                    or "<html" in body
+                    or "<h1" in body
+                    or "<div" in body
+                    or "<body" in body
+                )
                 if has_html:
                     return (True, scheme)
 

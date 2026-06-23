@@ -18,7 +18,7 @@ from icon_generator import (
     start_icon_worker,
     stop_icon_worker,
 )
-from process_scanner import scan_processes
+from process_scanner import get_registered_process_names, scan_processes
 from state_manager import (
     StateError,
     get_all_visible_items,
@@ -58,6 +58,7 @@ async def scan_and_update_processes(trigger_icons: bool = True, force_icons: boo
     for proc in processes:
         name = proc["name"]
         port = proc["port"]
+        status = proc.get("status", "running")
 
         # Skip self
         if name == SELF_NAME:
@@ -67,10 +68,15 @@ async def scan_and_update_processes(trigger_icons: bool = True, force_icons: boo
 
         # Get existing state
         existing = get_process(name)
+        is_dead = status in ("dead", "stopped")
 
-        # Once a process is identified as HTML, it stays that way forever.
-        # But always recheck protocol - a service can switch HTTP <-> HTTPS.
-        if existing and existing.get("is_html"):
+        if is_dead:
+            # Dead/stopped processes can't serve HTTP - preserve existing is_html
+            is_html = existing.get("is_html", False) if existing else False
+            protocol = existing.get("protocol", "http") if existing else "http"
+        elif existing and existing.get("is_html"):
+            # Once a process is identified as HTML, it stays that way forever.
+            # But always recheck protocol - a service can switch HTTP <-> HTTPS.
             is_html = True
             _, detected_protocol = await check_port_returns_html(port)
             protocol = detected_protocol or existing.get("protocol", "http")
@@ -79,13 +85,12 @@ async def scan_and_update_processes(trigger_icons: bool = True, force_icons: boo
             if protocol is None:
                 protocol = "http"  # Default fallback
 
-        # Update state - process is running so is_dead=False
         update_process(
             name=name,
             port=port,
             is_html=is_html,
             visible=True,
-            is_dead=False,
+            is_dead=is_dead,
             workdir=proc.get("workdir"),
             protocol=protocol,
         )
@@ -94,11 +99,17 @@ async def scan_and_update_processes(trigger_icons: bool = True, force_icons: boo
         # get_visible_html_processes() loop, which covers ALL visible HTML
         # processes (running + dead) in one place.
 
+    # Look up everything auto knows about (running, dead, or stopped). We only
+    # hide a process when auto itself has forgotten it. If the registered set
+    # comes back empty we treat that as "auto unreachable" and skip hiding so
+    # we never wipe the dashboard during a transient failure.
+    registered_names = get_registered_process_names()
+
     # Handle processes that are visible but not currently running
     for proc in get_visible_html_processes():
         name = proc["name"]
-        if name not in current_names:
-            # Not running - hide it from the dashboard
+        if registered_names and name not in registered_names and name not in current_names:
+            # Auto no longer knows about this process - hide it from the dashboard
             mark_process_invisible(name)
 
         # Queue icon generation for ANY visible HTML process without an icon,
@@ -205,6 +216,7 @@ async def index(request: Request):
             "last_scan": last_scan,
             "server_pid": SERVER_PID,
             "selected_process": None,
+            "selected_iframe_path": "",
         },
     )
 
@@ -230,7 +242,8 @@ async def api_scan():
 
 
 @app.get("/{name}", response_class=HTMLResponse)
-async def process_page(request: Request, name: str):
+@app.get("/{name}/{iframe_path:path}", response_class=HTMLResponse)
+async def process_page(request: Request, name: str, iframe_path: str = ""):
     """Render the dashboard with a specific process selected via URL."""
     items = get_all_visible_items()
     last_scan = get_last_scan()
@@ -242,5 +255,6 @@ async def process_page(request: Request, name: str):
             "last_scan": last_scan,
             "server_pid": SERVER_PID,
             "selected_process": name,
+            "selected_iframe_path": iframe_path,
         },
     )

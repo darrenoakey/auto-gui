@@ -20,9 +20,9 @@ daz-cad                19444   8765
 web-summary               2867   8889"""
         result = parse_auto_ps_output(output)
         assert len(result) == 3
-        assert result[0] == {"name": "claude_server", "pid": 2842, "port": 40123}
-        assert result[1] == {"name": "daz-cad", "pid": 19444, "port": 8765}
-        assert result[2] == {"name": "web-summary", "pid": 2867, "port": 8889}
+        assert result[0] == {"name": "claude_server", "pid": 2842, "port": 40123, "status": "running"}
+        assert result[1] == {"name": "daz-cad", "pid": 19444, "port": 8765, "status": "running"}
+        assert result[2] == {"name": "web-summary", "pid": 2867, "port": 8889, "status": "running"}
 
     def test_handles_dash_port(self):
         output = """NAME                       PID   PORT
@@ -52,6 +52,38 @@ another-port              9012   3000"""
         assert result[0]["port"] == 8080
         assert result[1]["port"] is None
         assert result[2]["port"] == 3000
+
+    def test_handles_dead_processes(self):
+        output = """NAME                           PID   PORT    RESTART
+v7                            dead   8952          -
+v9                            dead   8953          -"""
+        result = parse_auto_ps_output(output)
+        assert len(result) == 2
+        assert result[0] == {"name": "v7", "pid": None, "port": 8952, "status": "dead"}
+        assert result[1] == {"name": "v9", "pid": None, "port": 8953, "status": "dead"}
+
+    def test_handles_stopped_processes(self):
+        output = """NAME                           PID   PORT    RESTART
+knowledge-graph             stopped  19101          -
+desktop-search              stopped      -          -"""
+        result = parse_auto_ps_output(output)
+        assert len(result) == 2
+        assert result[0] == {"name": "knowledge-graph", "pid": None, "port": 19101, "status": "stopped"}
+        assert result[1] == {"name": "desktop-search", "pid": None, "port": None, "status": "stopped"}
+
+    def test_handles_mixed_running_dead_stopped(self):
+        output = """NAME                           PID   PORT    RESTART
+app-running                  1234   8080          -
+app-dead                     dead   8081          -
+app-stopped                stopped   8082          -"""
+        result = parse_auto_ps_output(output)
+        assert len(result) == 3
+        assert result[0]["status"] == "running"
+        assert result[0]["pid"] == 1234
+        assert result[1]["status"] == "dead"
+        assert result[1]["pid"] is None
+        assert result[2]["status"] == "stopped"
+        assert result[2]["pid"] is None
 
 
 class TestRunAutoPs:

@@ -40,6 +40,7 @@ def mock_state(tmp_path):
 </div>
 <div id="last-scan">{{ last_scan }}</div>
 <script>window.SELECTED_PROCESS = {{ selected_process | tojson }};</script>
+<script>window.SELECTED_IFRAME_PATH = {{ selected_iframe_path | tojson }};</script>
 </body>
 </html>
 """)
@@ -176,11 +177,12 @@ class TestScanAndUpdateProcesses:
 
     @pytest.mark.asyncio
     async def test_marks_missing_processes_invisible(self, mock_state):
-        # Process was visible before but no longer running
+        # Process was visible before, no longer running AND no longer registered with auto
         visible_process = {"name": "old-app", "port": 7000, "is_html": True, "visible": True}
 
         with (
             patch("server.scan_processes", return_value=[]),  # No running processes
+            patch("server.get_registered_process_names", return_value={"other-app"}),
             patch("server.get_visible_html_processes", return_value=[visible_process]),
             patch("server.mark_process_invisible") as mock_mark,
             patch("server.update_last_scan"),
@@ -190,6 +192,40 @@ class TestScanAndUpdateProcesses:
 
             # old-app should be marked invisible
             mock_mark.assert_called_once_with("old-app")
+
+    @pytest.mark.asyncio
+    async def test_keeps_registered_but_unreachable_processes_visible(self, mock_state):
+        """Processes still registered with auto must NOT be hidden, even if scan can't reach them."""
+        visible_process = {"name": "registered-app", "port": 7000, "is_html": True, "visible": True}
+
+        with (
+            patch("server.scan_processes", return_value=[]),  # auto -q ps returned nothing
+            patch("server.get_registered_process_names", return_value={"registered-app"}),
+            patch("server.get_visible_html_processes", return_value=[visible_process]),
+            patch("server.mark_process_invisible") as mock_mark,
+            patch("server.update_last_scan"),
+        ):
+            from server import scan_and_update_processes
+            await scan_and_update_processes()
+
+            mock_mark.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_does_not_hide_when_registered_set_unavailable(self, mock_state):
+        """If auto state is unreadable (empty set), don't wipe the dashboard."""
+        visible_process = {"name": "some-app", "port": 7000, "is_html": True, "visible": True}
+
+        with (
+            patch("server.scan_processes", return_value=[]),
+            patch("server.get_registered_process_names", return_value=set()),
+            patch("server.get_visible_html_processes", return_value=[visible_process]),
+            patch("server.mark_process_invisible") as mock_mark,
+            patch("server.update_last_scan"),
+        ):
+            from server import scan_and_update_processes
+            await scan_and_update_processes()
+
+            mock_mark.assert_not_called()
 
 
 class TestProcessPageRoute:
@@ -207,6 +243,23 @@ class TestProcessPageRoute:
             assert response.status_code == 200
             assert "SELECTED_PROCESS" in response.text
             assert '"grafana"' in response.text
+            assert 'SELECTED_IFRAME_PATH = ""' in response.text
+
+    def test_renders_with_selected_process_path(self, mock_state, mock_processes):
+        with (
+            patch("server.get_all_visible_items", return_value=mock_processes),
+            patch("server.get_last_scan", return_value="2025-01-24T12:00:00"),
+            patch("server.get_icons_dir", return_value=mock_state / "local" / "icons"),
+            patch("server.scan_and_update_processes", new_callable=AsyncMock),
+            patch("server.background_scanner", new_callable=AsyncMock),
+        ):
+            from server import app
+            client = TestClient(app)
+            response = client.get("/grafana/reports/daily")
+            assert response.status_code == 200
+            assert "SELECTED_PROCESS" in response.text
+            assert '"grafana"' in response.text
+            assert 'SELECTED_IFRAME_PATH = "reports/daily"' in response.text
 
     def test_api_processes_not_shadowed(self, mock_state, mock_processes):
         """Ensure /api/processes still returns JSON, not caught by /{name}."""
@@ -238,6 +291,7 @@ class TestProcessPageRoute:
             response = client.get("/")
             assert response.status_code == 200
             assert "SELECTED_PROCESS = null" in response.text
+            assert 'SELECTED_IFRAME_PATH = ""' in response.text
 
 
 class TestScanInterval:
@@ -372,3 +426,21 @@ class TestSmokeE2E:
         assert active_btn.count() == 1
         assert not page.locator("#welcome").is_visible()
         page.screenshot(path=smoke_screenshot_path("smoke_refresh.png"))
+
+    def test_refresh_preserves_nested_iframe_path(self, browser_context, first_process_name):
+        """Refreshing on /{name}/{path} restores that path into the iframe src."""
+        page = browser_context.new_page()
+        page.goto(
+            f"{self.BASE}/{first_process_name}/__auto_gui_refresh_test?view=detail#section",
+            wait_until="domcontentloaded",
+        )
+        page.wait_for_function(
+            "() => document.querySelector('.iframe-container.active iframe') !== null",
+            timeout=10000,
+        )
+        iframe_src = page.locator(".iframe-container.active iframe").get_attribute("src")
+        assert iframe_src is not None
+        assert "/__auto_gui_refresh_test" in iframe_src
+        assert "view=detail" in iframe_src
+        assert iframe_src.endswith("#section")
+        page.screenshot(path=smoke_screenshot_path("smoke_refresh_nested_url.png"))

@@ -55,7 +55,9 @@ The server triggers icon generation based on file existence (`has_icon(name)`), 
 `html_checker.py` tries both HTTP and HTTPS, requiring HTTP 200 status AND actual HTML structure in body (`<!doctype html` or `<html`). This filters out API servers and error pages. Special case: if HTTPS requires a client certificate (`CERTIFICATE_REQUIRED`), we assume it's a GUI and return True (most client-cert services are web dashboards).
 
 ### URL Routing
-`GET /{name}` serves the same `index.html` with `selected_process` set, enabling direct URL navigation and refresh persistence. The single-segment `{name}` doesn't conflict with `/api/processes` (multi-segment) or `/static`/`/icons` (mounted StaticFiles take priority). Frontend uses `pushState`/`popState` for browser history integration.
+`GET /{name}` and `GET /{name}/{iframe_path:path}` serve the same `index.html` with `selected_process` and `selected_iframe_path` set, enabling direct URL navigation and refresh persistence for nested iframe paths. `/api/processes` is declared before the catch-all route, and `/static`/`/icons` are mounted StaticFiles, so app routes do not shadow them. Frontend uses `pushState`/`popState` for browser history integration.
+
+Same-origin iframe navigation is reflected into the Auto-GUI URL directly, including SPA `history.pushState`/`replaceState` calls and hash route changes after the iframe loads. Cross-origin iframes, including most `localhost:<port>` apps framed by `localhost:2000`, cannot be inspected by the parent page due browser same-origin policy. Those apps must opt in with `window.parent.postMessage({type: "auto-gui:navigate", path: "/current/path?x=1#section"}, "*")` when their route changes.
 
 ### is_html Persistence
 Once a process is identified as `is_html: true`, it **stays that way forever** - never rechecked or downgraded. This prevents GUI apps from disappearing if they're temporarily unavailable during a scan. Non-HTML processes continue to be checked (they might become GUI apps). A GUI app only disappears when completely removed from auto.

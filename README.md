@@ -64,7 +64,7 @@ The dashboard ships with two themes — a dark space theme and a light nature th
 
 ### Direct Links
 
-Every service has its own URL (e.g., `http://localhost:2000/my-service`). You can bookmark individual services, and the page works correctly on refresh.
+Every service has its own URL (e.g., `http://localhost:2000/my-service`). Nested iframe paths are also preserved in the Auto-GUI URL, so `http://localhost:2000/my-service/settings/users` refreshes the dashboard and points the iframe back at `/settings/users`.
 
 ## Configuration
 
@@ -78,7 +78,7 @@ By default, the server runs on all interfaces at port 2000. You can change this:
 
 - **Running as a service** — Register Auto-GUI itself with `auto` so it starts automatically on login. Use `auto -q restart auto-gui` to restart it when needed.
 
-- **Bookmark your favorites** — Since each process has its own URL, you can bookmark `http://localhost:2000/my-api` to jump straight to a specific service.
+- **Bookmark your favorites** — Since each process has its own URL, you can bookmark `http://localhost:2000/my-api` or a nested route such as `http://localhost:2000/my-api/admin/jobs` to jump straight to a specific service view.
 
 - **Pin external services** — Use `./run add` to put frequently-visited internal tools, staging environments, or documentation sites right alongside your local services.
 

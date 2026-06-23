@@ -39,10 +39,18 @@ def parse_auto_ps_output(output: str) -> list[dict]:
             continue
 
         name = parts[0]
+        pid_str = parts[1]
+
+        # PID can be a number (running), "dead", or "stopped"
         try:
-            pid = int(parts[1])
+            pid = int(pid_str)
+            status = "running"
         except ValueError:
-            continue
+            if pid_str in ("dead", "stopped"):
+                pid = None
+                status = pid_str
+            else:
+                continue
 
         port_str = parts[2]
         port = None if port_str == "-" else int(port_str)
@@ -51,6 +59,7 @@ def parse_auto_ps_output(output: str) -> list[dict]:
             "name": name,
             "pid": pid,
             "port": port,
+            "status": status,
         })
 
     return processes

@@ -17,10 +17,167 @@ let consecutiveSuccesses = 0;
 const REQUIRED_SUCCESSES = 2;  // Require 2 successful polls before refreshing
 
 /**
+ * Build the base URL for a process or manual website.
+ */
+function buildBaseUrl(port, url, isWebsite, protocol) {
+    if (isWebsite) {
+        return url;
+    }
+    return `${protocol || 'http'}://localhost:${port}/`;
+}
+
+/**
+ * Return a URL path that is safe to use in the Auto-GUI address bar.
+ */
+function buildDashboardUrl(name, relativeUrl) {
+    const parsed = splitRelativeUrl(relativeUrl || '');
+    const processSegment = encodeURIComponent(name);
+    const pathSegment = parsed.path ? `/${parsed.path}` : '';
+    return `/${processSegment}${pathSegment}${parsed.search}${parsed.hash}`;
+}
+
+/**
+ * Split a relative URL into path, search, and hash parts.
+ */
+function splitRelativeUrl(relativeUrl) {
+    const parsed = new URL(relativeUrl || '', 'http://auto-gui.local/');
+    return {
+        path: parsed.pathname.replace(/^\/+/, ''),
+        search: parsed.search,
+        hash: parsed.hash,
+    };
+}
+
+/**
+ * Combine an iframe base URL with a relative URL from the Auto-GUI route.
+ */
+function buildIframeUrl(baseUrl, relativeUrl) {
+    const parsed = splitRelativeUrl(relativeUrl || '');
+    const url = new URL(baseUrl);
+    if (parsed.path) {
+        // Only when there's a relative sub-path do we treat the base URL as a
+        // directory root and append beneath it (adding a trailing slash as needed).
+        const basePath = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
+        url.pathname = `${basePath}${parsed.path}`.replace(/\/{2,}/g, '/');
+    }
+    // With no sub-path, preserve the base URL's pathname EXACTLY. Forcing a
+    // trailing slash here breaks path-style static sites (e.g. S3 hosting), where
+    // `/daily-digest` is a real object but `/daily-digest/` 404s on a missing
+    // `daily-digest/index.html` key.
+    url.search = parsed.search;
+    url.hash = parsed.hash;
+    return url.toString();
+}
+
+/**
+ * Convert an iframe URL back to a relative URL under that iframe's base URL.
+ */
+function relativeUrlFromIframeUrl(iframeUrl, baseUrl) {
+    const current = new URL(iframeUrl);
+    const base = new URL(baseUrl);
+    if (current.origin !== base.origin) {
+        return null;
+    }
+
+    const basePath = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`;
+    let path = current.pathname;
+    if (path.startsWith(basePath)) {
+        path = path.slice(basePath.length);
+    } else {
+        path = path.replace(/^\/+/, '');
+    }
+    return `${path}${current.search}${current.hash}`;
+}
+
+/**
+ * Push or replace the dashboard URL for the selected iframe location.
+ */
+function updateDashboardLocation(name, relativeUrl, replace) {
+    const url = buildDashboardUrl(name, relativeUrl);
+    const state = {process: name, relativeUrl: relativeUrl || ''};
+    if (replace) {
+        history.replaceState(state, '', url);
+    } else if (window.location.pathname + window.location.search + window.location.hash !== url) {
+        history.pushState(state, '', url);
+    }
+}
+
+/**
+ * Build the initial iframe-relative URL from the server route and browser fragment.
+ */
+function initialRelativeUrl() {
+    const path = window.SELECTED_IFRAME_PATH || '';
+    return `${path}${window.location.search || ''}${window.location.hash || ''}`;
+}
+
+/**
+ * Read the current iframe URL when browser same-origin rules allow it.
+ */
+function readIframeRelativeUrl(container) {
+    const iframe = container.querySelector('iframe');
+    if (!iframe) {
+        return null;
+    }
+    try {
+        return relativeUrlFromIframeUrl(iframe.contentWindow.location.href, container.dataset.baseUrl);
+    } catch (_error) {
+        return null;
+    }
+}
+
+/**
+ * Reflect an iframe location change into the Auto-GUI address bar.
+ */
+function syncIframeLocation(container, replace) {
+    const relativeUrl = readIframeRelativeUrl(container);
+    if (relativeUrl === null) {
+        return;
+    }
+    container.dataset.relativeUrl = relativeUrl;
+    updateDashboardLocation(container.dataset.name, relativeUrl, replace);
+}
+
+/**
+ * Patch same-origin SPA history calls so pushState/replaceState are visible to Auto-GUI.
+ */
+function installSameOriginHistoryBridge(container) {
+    const iframe = container.querySelector('iframe');
+    if (!iframe) {
+        return;
+    }
+    try {
+        const frameWindow = iframe.contentWindow;
+        if (!frameWindow || frameWindow.__autoGuiHistoryBridgeInstalled) {
+            return;
+        }
+
+        const notify = () => setTimeout(() => syncIframeLocation(container, false), 0);
+        const originalPushState = frameWindow.history.pushState.bind(frameWindow.history);
+        const originalReplaceState = frameWindow.history.replaceState.bind(frameWindow.history);
+
+        frameWindow.history.pushState = function (...args) {
+            const result = originalPushState(...args);
+            notify();
+            return result;
+        };
+        frameWindow.history.replaceState = function (...args) {
+            const result = originalReplaceState(...args);
+            setTimeout(() => syncIframeLocation(container, true), 0);
+            return result;
+        };
+        frameWindow.addEventListener('popstate', notify);
+        frameWindow.addEventListener('hashchange', notify);
+        frameWindow.__autoGuiHistoryBridgeInstalled = true;
+    } catch (_error) {
+        // Cross-origin frames cannot be inspected. They can send auto-gui:navigate via postMessage.
+    }
+}
+
+/**
  * Open a process or website in a new browser window
  */
 function openInNewWindow(name, port, url, isWebsite, protocol) {
-    const targetUrl = isWebsite ? url : `${protocol || 'http'}://localhost:${port}/`;
+    const targetUrl = buildBaseUrl(port, url, isWebsite, protocol);
     window.open(targetUrl, '_blank');
 }
 
@@ -63,7 +220,10 @@ function showWelcome() {
 /**
  * Show a process or website iframe, creating it if necessary
  */
-function showProcess(name, port, url, isWebsite, protocol, skipPush) {
+function showProcess(name, port, url, isWebsite, protocol, options) {
+    const settings = options || {};
+    const relativeUrl = settings.relativeUrl || '';
+    const skipPush = settings.skipPush || false;
     const content = document.getElementById('content');
     const welcome = document.getElementById('welcome');
 
@@ -94,18 +254,33 @@ function showProcess(name, port, url, isWebsite, protocol, skipPush) {
         container = document.createElement('div');
         container.className = 'iframe-container loading';
         container.dataset.name = name;
+        container.dataset.baseUrl = buildBaseUrl(port, url, isWebsite, protocol);
+        container.dataset.relativeUrl = relativeUrl;
+        container.dataset.replaceOnNextLoad = 'true';
 
         const iframe = document.createElement('iframe');
-        // Use URL for websites, localhost:port for processes
-        iframe.src = isWebsite ? url : `${protocol || 'http'}://localhost:${port}/`;
+        iframe.src = buildIframeUrl(container.dataset.baseUrl, relativeUrl);
         iframe.title = name;
         iframe.onload = () => {
             container.classList.remove('loading');
+            const replace = container.dataset.replaceOnNextLoad === 'true';
+            container.dataset.replaceOnNextLoad = 'false';
+            syncIframeLocation(container, replace);
+            installSameOriginHistoryBridge(container);
         };
 
         container.appendChild(iframe);
         content.appendChild(container);
         loadedIframes.set(name, container);
+    } else if (relativeUrl) {
+        const iframe = container.querySelector('iframe');
+        const nextUrl = buildIframeUrl(container.dataset.baseUrl, relativeUrl);
+        if (iframe && iframe.src !== nextUrl) {
+            container.classList.add('loading');
+            container.dataset.relativeUrl = relativeUrl;
+            container.dataset.replaceOnNextLoad = 'true';
+            iframe.src = nextUrl;
+        }
     }
 
     // Show the container
@@ -114,7 +289,7 @@ function showProcess(name, port, url, isWebsite, protocol, skipPush) {
 
     // Update URL unless we're restoring from popstate/initial load
     if (!skipPush) {
-        history.pushState({process: name}, '', '/' + name);
+        updateDashboardLocation(name, relativeUrl, false);
     }
 }
 
@@ -279,7 +454,8 @@ function startPolling() {
 document.addEventListener('DOMContentLoaded', () => {
     // Set initial history state for the current URL
     if (window.SELECTED_PROCESS) {
-        history.replaceState({process: window.SELECTED_PROCESS}, '', '/' + window.SELECTED_PROCESS);
+        const relativeUrl = initialRelativeUrl();
+        updateDashboardLocation(window.SELECTED_PROCESS, relativeUrl, true);
         // Find the matching button and activate that process
         const button = document.querySelector(`[data-name="${window.SELECTED_PROCESS}"]`);
         if (button) {
@@ -287,7 +463,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const url = button.dataset.url;
             const isWebsite = button.dataset.isWebsite === 'true';
             const protocol = button.dataset.protocol || 'http';
-            showProcess(window.SELECTED_PROCESS, port, url, isWebsite, protocol, true);
+            showProcess(window.SELECTED_PROCESS, port, url, isWebsite, protocol, {
+                skipPush: true,
+                relativeUrl,
+            });
         }
     } else {
         history.replaceState({}, '', '/');
@@ -306,9 +485,35 @@ window.addEventListener('popstate', (event) => {
             const url = button.dataset.url;
             const isWebsite = button.dataset.isWebsite === 'true';
             const protocol = button.dataset.protocol || 'http';
-            showProcess(name, port, url, isWebsite, protocol, true);
+            showProcess(name, port, url, isWebsite, protocol, {
+                skipPush: true,
+                relativeUrl: event.state.relativeUrl || '',
+            });
         }
     } else {
         showWelcome();
     }
+});
+
+// Cross-origin frames cannot be inspected by the parent page. Apps can opt in
+// by posting {type: 'auto-gui:navigate', path: '/current/path?x=1#section'}.
+window.addEventListener('message', (event) => {
+    if (!currentProcess) {
+        return;
+    }
+    const container = loadedIframes.get(currentProcess);
+    if (!container) {
+        return;
+    }
+    const iframe = container.querySelector('iframe');
+    if (!iframe || event.source !== iframe.contentWindow) {
+        return;
+    }
+    const data = event.data;
+    if (!data || data.type !== 'auto-gui:navigate' || typeof data.path !== 'string') {
+        return;
+    }
+    const relativeUrl = data.path.replace(/^\/+/, '');
+    container.dataset.relativeUrl = relativeUrl;
+    updateDashboardLocation(currentProcess, relativeUrl, false);
 });
