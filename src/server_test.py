@@ -39,7 +39,10 @@ def mock_state(tmp_path):
 {% endfor %}
 </div>
 <div id="last-scan">{{ last_scan }}</div>
-<script>window.SELECTED_PROCESS = {{ selected_process | tojson }};</script>
+<script>
+window.SELECTED_PROCESS = {{ selected_process | tojson }};
+window.SELECTED_IFRAME_PATH = {{ selected_iframe_path | tojson }};
+</script>
 </body>
 </html>
 """)
@@ -239,6 +242,52 @@ class TestProcessPageRoute:
             assert response.status_code == 200
             assert "SELECTED_PROCESS = null" in response.text
 
+    def test_index_has_empty_selected_iframe_path(self, mock_state, mock_processes):
+        """Ensure GET / passes a JSON-serializable iframe path."""
+        with (
+            patch("server.get_all_visible_items", return_value=mock_processes),
+            patch("server.get_last_scan", return_value="2025-01-24T12:00:00"),
+            patch("server.get_icons_dir", return_value=mock_state / "local" / "icons"),
+            patch("server.scan_and_update_processes", new_callable=AsyncMock),
+            patch("server.background_scanner", new_callable=AsyncMock),
+        ):
+            from server import app
+            client = TestClient(app)
+            response = client.get("/")
+            assert response.status_code == 200
+            assert 'SELECTED_IFRAME_PATH = ""' in response.text
+
+    def test_process_page_has_empty_selected_iframe_path(self, mock_state, mock_processes):
+        """Ensure direct process URLs pass a JSON-serializable iframe path."""
+        with (
+            patch("server.get_all_visible_items", return_value=mock_processes),
+            patch("server.get_last_scan", return_value="2025-01-24T12:00:00"),
+            patch("server.get_icons_dir", return_value=mock_state / "local" / "icons"),
+            patch("server.scan_and_update_processes", new_callable=AsyncMock),
+            patch("server.background_scanner", new_callable=AsyncMock),
+        ):
+            from server import app
+            client = TestClient(app)
+            response = client.get("/grafana")
+            assert response.status_code == 200
+            assert 'SELECTED_IFRAME_PATH = ""' in response.text
+
+    def test_nested_process_page_serializes_iframe_path(self, mock_state, mock_processes):
+        """Ensure nested dashboard URLs pass the iframe path to the frontend."""
+        with (
+            patch("server.get_all_visible_items", return_value=mock_processes),
+            patch("server.get_last_scan", return_value="2025-01-24T12:00:00"),
+            patch("server.get_icons_dir", return_value=mock_state / "local" / "icons"),
+            patch("server.scan_and_update_processes", new_callable=AsyncMock),
+            patch("server.background_scanner", new_callable=AsyncMock),
+        ):
+            from server import app
+            client = TestClient(app)
+            response = client.get("/grafana/dashboard/main")
+            assert response.status_code == 200
+            assert '"grafana"' in response.text
+            assert '"dashboard/main"' in response.text
+
 
 class TestScanInterval:
     def test_scan_interval_is_reasonable(self):
@@ -260,9 +309,15 @@ class TestSmokeE2E:
     @pytest.fixture(autouse=True)
     def _require_live_server(self):
         """Skip if the live server isn't reachable."""
+        import urllib.error
         import urllib.request
         try:
-            urllib.request.urlopen(self.BASE, timeout=3)
+            with urllib.request.urlopen(self.BASE, timeout=3) as response:
+                if response.status != 200:
+                    pytest.skip(f"Live server returned HTTP {response.status} at localhost:2000")
+        except urllib.error.HTTPError as error:
+            error.close()
+            pytest.skip(f"Live server returned HTTP {error.code} at localhost:2000")
         except Exception:
             pytest.skip("Live server not running at localhost:2000")
 

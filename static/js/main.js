@@ -17,6 +17,18 @@ let consecutiveSuccesses = 0;
 const REQUIRED_SUCCESSES = 2;  // Require 2 successful polls before refreshing
 
 /**
+ * Build the iframe URL for a process or website.
+ */
+function buildIframeUrl(port, url, isWebsite, protocol, relativePath) {
+    const baseUrl = isWebsite ? url : `${protocol || 'http'}://localhost:${port}/`;
+    if (!relativePath) {
+        return baseUrl;
+    }
+    const urlWithSlash = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+    return new URL(relativePath, urlWithSlash).toString();
+}
+
+/**
  * Open a process or website in a new browser window
  */
 function openInNewWindow(name, port, url, isWebsite, protocol) {
@@ -63,7 +75,7 @@ function showWelcome() {
 /**
  * Show a process or website iframe, creating it if necessary
  */
-function showProcess(name, port, url, isWebsite, protocol, skipPush) {
+function showProcess(name, port, url, isWebsite, protocol, skipPush, relativePath) {
     const content = document.getElementById('content');
     const welcome = document.getElementById('welcome');
 
@@ -96,8 +108,7 @@ function showProcess(name, port, url, isWebsite, protocol, skipPush) {
         container.dataset.name = name;
 
         const iframe = document.createElement('iframe');
-        // Use URL for websites, localhost:port for processes
-        iframe.src = isWebsite ? url : `${protocol || 'http'}://localhost:${port}/`;
+        iframe.src = buildIframeUrl(port, url, isWebsite, protocol, relativePath);
         iframe.title = name;
         iframe.onload = () => {
             container.classList.remove('loading');
@@ -287,7 +298,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const url = button.dataset.url;
             const isWebsite = button.dataset.isWebsite === 'true';
             const protocol = button.dataset.protocol || 'http';
-            showProcess(window.SELECTED_PROCESS, port, url, isWebsite, protocol, true);
+            const relativePath = `${window.SELECTED_IFRAME_PATH || ''}${window.location.search || ''}${window.location.hash || ''}`;
+            showProcess(window.SELECTED_PROCESS, port, url, isWebsite, protocol, true, relativePath);
         }
     } else {
         history.replaceState({}, '', '/');

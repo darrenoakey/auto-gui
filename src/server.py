@@ -183,6 +183,20 @@ import os
 SERVER_PID = os.getpid()
 
 
+def dashboard_context(
+    selected_process: str | None = None,
+    selected_iframe_path: str = "",
+) -> dict:
+    """Build the template context shared by every dashboard route."""
+    return {
+        "processes": get_all_visible_items(),
+        "last_scan": get_last_scan(),
+        "server_pid": SERVER_PID,
+        "selected_process": selected_process,
+        "selected_iframe_path": selected_iframe_path,
+    }
+
+
 @app.exception_handler(StateError)
 async def state_error_handler(_request: Request, exc: StateError):
     """Handle state file errors with a clear error message."""
@@ -195,17 +209,10 @@ async def state_error_handler(_request: Request, exc: StateError):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Render the main dashboard page."""
-    items = get_all_visible_items()
-    last_scan = get_last_scan()
     return templates.TemplateResponse(
         request,
         "index.html",
-        {
-            "processes": items,
-            "last_scan": last_scan,
-            "server_pid": SERVER_PID,
-            "selected_process": None,
-        },
+        dashboard_context(),
     )
 
 
@@ -230,17 +237,11 @@ async def api_scan():
 
 
 @app.get("/{name}", response_class=HTMLResponse)
-async def process_page(request: Request, name: str):
+@app.get("/{name}/{iframe_path:path}", response_class=HTMLResponse)
+async def process_page(request: Request, name: str, iframe_path: str = ""):
     """Render the dashboard with a specific process selected via URL."""
-    items = get_all_visible_items()
-    last_scan = get_last_scan()
     return templates.TemplateResponse(
         request,
         "index.html",
-        {
-            "processes": items,
-            "last_scan": last_scan,
-            "server_pid": SERVER_PID,
-            "selected_process": name,
-        },
+        dashboard_context(name, iframe_path),
     )
