@@ -66,6 +66,18 @@ The dashboard ships with two themes — a dark space theme and a light nature th
 
 Every service has its own URL (e.g., `http://localhost:2000/my-service`). Nested iframe paths are also preserved in the Auto-GUI URL, so `http://localhost:2000/my-service/settings/users` refreshes the dashboard and points the iframe back at `/settings/users`.
 
+### Iframe URL Tracking
+
+When you navigate inside an embedded app (e.g. clicking a link that changes the iframe from `/` to `/dashboard/stats`), Auto-GUI updates its own address bar to match. That way a refresh — or bookmarking the URL — brings you back to the exact same screen, not the app's root.
+
+For **same-origin** apps this works automatically. For **cross-origin** apps (the typical case, since each app runs on its own port), include a one-line script tag in the app's HTML:
+
+```html
+<script src="http://localhost:2000/static/js/iframe-bridge.js"></script>
+```
+
+The bridge uses `postMessage` to notify Auto-GUI of every navigation (pushState, replaceState, hash changes, link clicks). If the bridge is not installed, Auto-GUI falls back to the initial root URL only.
+
 ## Configuration
 
 By default, the server runs on all interfaces at port 2000. You can change this:

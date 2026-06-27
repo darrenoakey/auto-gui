@@ -10,6 +10,12 @@ let currentProcess = null;
 // Poll interval (10 seconds for faster updates during icon generation)
 const POLL_INTERVAL = 10000;
 
+// Interval for checking whether the active iframe's URL has changed (1.5 seconds).
+// This catches full-page navigations inside same-origin iframes that the
+// pushState/popstate bridge misses, and also sends a request-location message
+// to cross-origin iframes that include the auto-gui iframe-bridge script.
+const LOCATION_POLL_INTERVAL = 1500;
+
 // Server state tracking
 let serverAvailable = true;
 let needsRefresh = false;
@@ -444,10 +450,52 @@ function updateLastScan(timestamp) {
 }
 
 /**
+ * Check the active iframe for location changes and sync them into the dashboard URL.
+ *
+ * Same-origin iframes: read contentWindow.location directly (always works).
+ * Cross-origin iframes: post a request-location message; if the child page
+ * includes the iframe-bridge script it will respond with an auto-gui:navigate
+ * message that the existing message listener already handles.
+ */
+function checkActiveIframeLocation() {
+    if (!currentProcess) {
+        return;
+    }
+    const container = loadedIframes.get(currentProcess);
+    if (!container) {
+        return;
+    }
+    const iframe = container.querySelector('iframe');
+    if (!iframe) {
+        return;
+    }
+
+    // Try same-origin read first.
+    const relativeUrl = readIframeRelativeUrl(container);
+    if (relativeUrl !== null) {
+        if (relativeUrl !== container.dataset.relativeUrl) {
+            container.dataset.relativeUrl = relativeUrl;
+            updateDashboardLocation(container.dataset.name, relativeUrl, false);
+        }
+        return;
+    }
+
+    // Cross-origin: ask the iframe to report its location via postMessage.
+    // The iframe-bridge.js script (if installed) will respond. This is the only
+    // way to track navigation inside cross-origin frames.
+    try {
+        iframe.contentWindow.postMessage({type: 'auto-gui:request-location'}, '*');
+    } catch (_error) {
+        // Content window is inaccessible — nothing we can do.
+    }
+}
+
+/**
  * Start polling for updates
  */
 function startPolling() {
     setInterval(pollProcesses, POLL_INTERVAL);
+    setInterval(checkActiveIframeLocation, LOCATION_POLL_INTERVAL);
 }
 
 // Initialize on page load
@@ -496,7 +544,9 @@ window.addEventListener('popstate', (event) => {
 });
 
 // Cross-origin frames cannot be inspected by the parent page. Apps can opt in
-// by posting {type: 'auto-gui:navigate', path: '/current/path?x=1#section'}.
+// by including iframe-bridge.js (which posts proactively AND responds to
+// request-location polls) or by manually posting:
+//   {type: 'auto-gui:navigate', path: '/current/path?x=1#section'}
 window.addEventListener('message', (event) => {
     if (!currentProcess) {
         return;
@@ -514,6 +564,11 @@ window.addEventListener('message', (event) => {
         return;
     }
     const relativeUrl = data.path.replace(/^\/+/, '');
+    // Skip if nothing changed — prevents duplicate history entries when the
+    // bridge reports the same location on every request-location poll.
+    if (relativeUrl === container.dataset.relativeUrl) {
+        return;
+    }
     container.dataset.relativeUrl = relativeUrl;
     updateDashboardLocation(currentProcess, relativeUrl, false);
 });
