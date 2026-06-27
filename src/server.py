@@ -34,6 +34,9 @@ from state_manager import (
     update_website,
 )
 
+from fastapi import WebSocket
+from proxy import proxy_http_request, proxy_websocket
+
 
 # Scan interval in seconds
 SCAN_INTERVAL = 30  # 30 seconds
@@ -201,6 +204,21 @@ async def state_error_handler(_request: Request, exc: StateError):
         f"State File Error\n\n{exc}\n\nTry: auto -q restart auto-gui",
         status_code=503,
     )
+
+
+@app.api_route("/proxy/{name}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@app.api_route("/proxy/{name}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def proxy_route(name: str, path: str = "", request: Request = None):
+    """Transparent reverse proxy: routes iframe traffic through Auto-GUI so
+    embedded apps become same-origin, enabling automatic URL tracking."""
+    return await proxy_http_request(name, path, request)
+
+
+@app.websocket("/proxy/{name}")
+@app.websocket("/proxy/{name}/{path:path}")
+async def proxy_ws_route(name: str, path: str = "", ws: WebSocket = None):
+    """Proxy WebSocket upgrades through Auto-GUI."""
+    await proxy_websocket(name, path, ws)
 
 
 @app.get("/", response_class=HTMLResponse)

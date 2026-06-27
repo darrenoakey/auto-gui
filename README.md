@@ -70,13 +70,7 @@ Every service has its own URL (e.g., `http://localhost:2000/my-service`). Nested
 
 When you navigate inside an embedded app (e.g. clicking a link that changes the iframe from `/` to `/dashboard/stats`), Auto-GUI updates its own address bar to match. That way a refresh — or bookmarking the URL — brings you back to the exact same screen, not the app's root.
 
-For **same-origin** apps this works automatically. For **cross-origin** apps (the typical case, since each app runs on its own port), include a one-line script tag in the app's HTML:
-
-```html
-<script src="http://localhost:2000/static/js/iframe-bridge.js"></script>
-```
-
-The bridge uses `postMessage` to notify Auto-GUI of every navigation (pushState, replaceState, hash changes, link clicks). If the bridge is not installed, Auto-GUI falls back to the initial root URL only.
+This works **automatically for all apps** with zero per-app changes. Auto-GUI routes all iframe traffic through a transparent reverse proxy (`/proxy/{name}/...`), making every embedded app same-origin with the dashboard. The parent page can then read the iframe's current URL directly and sync it into the address bar. SPA navigations (`pushState`, `replaceState`), full-page link clicks, hash changes, and form submissions are all tracked. WebSocket upgrades are proxied too.
 
 ## Configuration
 

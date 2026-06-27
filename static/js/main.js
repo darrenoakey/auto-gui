@@ -23,13 +23,15 @@ let consecutiveSuccesses = 0;
 const REQUIRED_SUCCESSES = 2;  // Require 2 successful polls before refreshing
 
 /**
- * Build the base URL for a process or manual website.
+ * Build the proxy base URL for a process or manual website.
+ *
+ * All iframe traffic is routed through Auto-GUI's reverse proxy (/proxy/{name})
+ * so that every embedded app is same-origin with the dashboard. This lets the
+ * parent page read iframe.contentWindow.location directly — enabling automatic
+ * URL tracking for ALL apps with zero per-app changes.
  */
-function buildBaseUrl(port, url, isWebsite, protocol) {
-    if (isWebsite) {
-        return url;
-    }
-    return `${protocol || 'http'}://localhost:${port}/`;
+function buildBaseUrl(port, url, isWebsite, protocol, name) {
+    return `/proxy/${encodeURIComponent(name)}`;
 }
 
 /**
@@ -59,7 +61,7 @@ function splitRelativeUrl(relativeUrl) {
  */
 function buildIframeUrl(baseUrl, relativeUrl) {
     const parsed = splitRelativeUrl(relativeUrl || '');
-    const url = new URL(baseUrl);
+    const url = new URL(baseUrl, window.location.origin);
     if (parsed.path) {
         // Only when there's a relative sub-path do we treat the base URL as a
         // directory root and append beneath it (adding a trailing slash as needed).
@@ -76,11 +78,14 @@ function buildIframeUrl(baseUrl, relativeUrl) {
 }
 
 /**
- * Convert an iframe URL back to a relative URL under that iframe's base URL.
+ * Convert a proxy iframe URL back to a relative URL under that iframe's base URL.
+ *
+ * Because all iframes now go through the /proxy/{name} route, they are
+ * same-origin with the dashboard, so this always works.
  */
 function relativeUrlFromIframeUrl(iframeUrl, baseUrl) {
     const current = new URL(iframeUrl);
-    const base = new URL(baseUrl);
+    const base = new URL(baseUrl, window.location.origin);
     if (current.origin !== base.origin) {
         return null;
     }
@@ -183,7 +188,7 @@ function installSameOriginHistoryBridge(container) {
  * Open a process or website in a new browser window
  */
 function openInNewWindow(name, port, url, isWebsite, protocol) {
-    const targetUrl = buildBaseUrl(port, url, isWebsite, protocol);
+    const targetUrl = buildBaseUrl(port, url, isWebsite, protocol, name);
     window.open(targetUrl, '_blank');
 }
 
@@ -260,7 +265,7 @@ function showProcess(name, port, url, isWebsite, protocol, options) {
         container = document.createElement('div');
         container.className = 'iframe-container loading';
         container.dataset.name = name;
-        container.dataset.baseUrl = buildBaseUrl(port, url, isWebsite, protocol);
+        container.dataset.baseUrl = buildBaseUrl(port, url, isWebsite, protocol, name);
         container.dataset.relativeUrl = relativeUrl;
         container.dataset.replaceOnNextLoad = 'true';
 
