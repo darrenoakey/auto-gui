@@ -39,12 +39,23 @@ def _items_by_name() -> dict[str, dict]:
 
 
 def resolve_backend(name: str) -> Optional[str]:
-    """Return the backend base URL (no trailing slash) for *name*, or None."""
+    """Return the backend base URL (no trailing slash) for *name*, or None.
+
+    For websites the backend is the ORIGIN only (scheme://netloc).  The
+    configured URL path is used by the frontend as the default landing
+    relative URL, so root-relative assets like /css/style.css resolve
+    against the host root rather than being double-prefixed with the
+    sub-path.
+    """
     item = _items_by_name().get(name)
     if not item:
         return None
     if item.get("is_website"):
-        return (item.get("url") or "").rstrip("/")
+        url = (item.get("url") or "").strip()
+        if not url:
+            return None
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}"
     port = item.get("port")
     protocol = item.get("protocol") or "http"
     if not port:
