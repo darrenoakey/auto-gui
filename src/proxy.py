@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import re
 from typing import Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import Request, WebSocket
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 
 # ---------------------------------------------------------------------------
 # Backend lookup
@@ -126,7 +126,7 @@ _ATTR_RE = re.compile(
 )
 
 
-def rewrite_html(html: str, prefix: str, backend_origin: str, name: str) -> str:
+def rewrite_html(html: str, prefix: str, backend_origin: str) -> str:
     """Rewrite URLs in HTML and inject the proxy-shim script."""
 
     def _attr_replacer(m: re.Match) -> str:
@@ -138,7 +138,7 @@ def rewrite_html(html: str, prefix: str, backend_origin: str, name: str) -> str:
 
     html = _ATTR_RE.sub(_attr_replacer, html)
 
-    shim = _build_shim(prefix, name)
+    shim = _build_shim(prefix)
     # Inject as early as possible — before any app script runs.
     head_match = re.search(r"<head[^>]*>", html, re.IGNORECASE)
     if head_match:
@@ -149,7 +149,7 @@ def rewrite_html(html: str, prefix: str, backend_origin: str, name: str) -> str:
     return html
 
 
-def _build_shim(prefix: str, name: str) -> str:
+def _build_shim(prefix: str) -> str:
     """Build the JS shim injected into every proxied HTML page."""
     return (
         f'<script id="__auto_gui_proxy_shim" data-prefix="{prefix}">'
@@ -189,8 +189,13 @@ def _build_shim(prefix: str, name: str) -> str:
         "return protocols!==undefined?new OW(u,protocols):new OW(u);};"
         "window.WebSocket.prototype=OW.prototype;}"
         # --- Notify parent of navigation (belt-and-suspenders) ---
-        "function notify(){try{window.parent.postMessage("
-        "{type:'auto-gui:navigate',path:location.pathname+location.search+location.hash},'*');"
+        # Send app-relative path (strip proxy prefix) so the parent's message
+        # handler receives e.g. '/settings' not '/proxy/appname/settings'.
+        "function notify(){"
+        "try{"
+        "var np=location.pathname;"
+        "if(np.indexOf(P)===0)np=np.slice(P.length)||'/';"
+        "window.parent.postMessage({type:'auto-gui:navigate',path:np+location.search+location.hash},'*');"
         "}catch(e){}}"
         "window.addEventListener('popstate',notify);"
         "window.addEventListener('hashchange',notify);"
@@ -296,7 +301,6 @@ async def proxy_http_request(
             content.decode("utf-8", errors="replace"),
             prefix,
             backend_origin,
-            name,
         ).encode("utf-8")
     elif "css" in content_type:
         content = rewrite_css(
@@ -320,7 +324,6 @@ async def proxy_http_request(
 async def proxy_websocket(name: str, path: str, ws: WebSocket) -> None:
     """Proxy a WebSocket connection to the backend."""
     import websockets
-    import json
 
     backend = resolve_backend(name)
     if backend is None:
