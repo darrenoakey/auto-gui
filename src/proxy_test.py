@@ -1,7 +1,7 @@
 """Unit tests for proxy.py helper functions."""
 from unittest.mock import patch
 
-from proxy import resolve_backend, _rewrite_url_attr, rewrite_css
+from proxy import resolve_backend, _rewrite_url_attr, rewrite_css, _HOP_BY_HOP, _filter_headers
 
 
 def _mock_items(items):
@@ -82,3 +82,30 @@ class TestRewriteCss:
         css = "body { background: url('http://example.com/images/bg.png'); }"
         result = rewrite_css(css, "/proxy/app", "http://example.com")
         assert "/proxy/app/images/bg.png" in result
+
+
+class TestContentEncodingStrip:
+    """Verify that Content-Encoding is never forwarded to the browser.
+
+    httpx auto-decompresses upstream bodies, so forwarding the original
+    Content-Encoding header would cause ERR_CONTENT_DECODING_FAILED.
+    """
+
+    def test_content_encoding_in_hop_by_hop(self):
+        assert "content-encoding" in _HOP_BY_HOP
+
+    def test_filter_headers_strips_content_encoding_lowercase(self):
+        result = _filter_headers(
+            {"content-type": "text/html", "content-encoding": "gzip", "x-custom": "foo"}
+        )
+        assert "content-encoding" not in result
+        assert "content-type" in result
+        assert "x-custom" in result
+
+    def test_filter_headers_strips_content_encoding_mixedcase(self):
+        result = _filter_headers(
+            {"Content-Type": "text/html", "Content-Encoding": "br", "X-Custom": "foo"}
+        )
+        assert "Content-Encoding" not in result
+        assert "content-encoding" not in {k.lower(): v for k, v in result.items()}
+        assert "Content-Type" in result

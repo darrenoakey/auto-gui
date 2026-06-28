@@ -79,6 +79,10 @@ _HOP_BY_HOP = frozenset(
         "transfer-encoding",
         "upgrade",
         "host",
+        # httpx auto-decompresses the upstream body; forwarding the original
+        # encoding header would tell the browser to decompress already-plain
+        # bytes → net::ERR_CONTENT_DECODING_FAILED.
+        "content-encoding",
     }
 )
 
@@ -295,10 +299,12 @@ async def proxy_http_request(
 
     # Rewrite Location header on redirects
     resp_headers = _filter_headers(upstream.headers)
-    # We may rewrite the body (HTML/CSS), so drop content-length to let the
-    # framework recalculate it.
+    # Drop content-length (body may be rewritten) and content-encoding
+    # (httpx already decoded; re-sending would cause ERR_CONTENT_DECODING_FAILED).
     resp_headers.pop("content-length", None)
     resp_headers.pop("Content-Length", None)
+    resp_headers.pop("content-encoding", None)
+    resp_headers.pop("Content-Encoding", None)
     location = resp_headers.get("location") or resp_headers.get("Location")
     if location:
         resp_headers["location"] = _rewrite_url_attr(location, prefix, backend_origin)
