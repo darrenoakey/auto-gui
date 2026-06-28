@@ -5,6 +5,7 @@ HTTP server) and uses Playwright to verify that navigating inside a cross-origin
 iframe automatically updates the dashboard URL — with ZERO per-app changes
 (no bridge script needed, since the proxy makes everything same-origin).
 """
+import gzip as gzip_module
 import socket
 import sys
 import threading
@@ -452,3 +453,150 @@ class TestPathStyleWebsite:
         iframe_src = page.locator(".iframe-container.active iframe").get_attribute("src")
         assert "/sub" in iframe_src, f"/sub missing from refreshed iframe src: {iframe_src}"
         assert "/sub/sub" not in iframe_src, f"Double sub-path in iframe src: {iframe_src}"
+
+
+# ---------------------------------------------------------------------------
+# Compressed upstream: verify browser can actually render gzip-encoded content
+# ---------------------------------------------------------------------------
+
+def _gzip_page(label: str) -> bytes:
+    raw = f"""<!DOCTYPE html>
+<html>
+<head><title>GzipSite</title></head>
+<body>
+<h1 id="label">{label}</h1>
+<p id="body-text">This page was served with gzip Content-Encoding.</p>
+</body>
+</html>""".encode("utf-8")
+    return gzip_module.compress(raw)
+
+
+def _start_gzip_site_server(port: int) -> HTTPServer:
+    """HTTP server that serves every page with Content-Encoding: gzip.
+
+    This exercises the fix for ERR_CONTENT_DECODING_FAILED: if the proxy
+    forwards the upstream Content-Encoding header on an already-decoded body,
+    the browser fails to render the page entirely.
+    """
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = self.path.split("?")[0].split("#")[0]
+            label = {"/": "Gzip Home", "/page2": "Gzip Page2"}.get(path, "Gzip Other")
+            body = _gzip_page(label)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args) -> None:  # noqa: A002
+            pass
+
+    server = HTTPServer(("127.0.0.1", port), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+@pytest.fixture
+def gzip_site_setup():
+    """Port-app item whose upstream always sends gzip-compressed HTML."""
+    site_port = _free_port()
+    dashboard_port = _free_port()
+
+    mock_items = [
+        {
+            "name": "gzip-app",
+            "port": site_port,
+            "is_html": True,
+            "is_website": False,
+            "visible": True,
+            "icon_status": "pending",
+            "protocol": "http",
+        }
+    ]
+
+    patches = [
+        patch("server.get_all_visible_items", return_value=mock_items),
+        patch("proxy.get_all_visible_items", return_value=mock_items),
+        patch("server.get_last_scan", return_value="2026-01-01T00:00:00"),
+        patch("server.scan_and_update_processes", new_callable=AsyncMock),
+        patch("server.background_scanner", new_callable=AsyncMock),
+    ]
+    for p in patches:
+        p.start()
+
+    gzip_server = _start_gzip_site_server(site_port)
+    dashboard_server = _start_dashboard(dashboard_port)
+
+    import urllib.request
+    for _ in range(50):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{dashboard_port}", timeout=1)
+            urllib.request.urlopen(f"http://127.0.0.1:{site_port}/", timeout=1)
+            break
+        except Exception:
+            time.sleep(0.2)
+
+    yield {
+        "dashboard": f"http://127.0.0.1:{dashboard_port}",
+        "site_port": site_port,
+        "dashboard_port": dashboard_port,
+    }
+
+    dashboard_server.should_exit = True
+    gzip_server.shutdown()
+    for p in patches:
+        p.stop()
+
+
+class TestCompressedUpstream:
+    """Verify that gzip-compressed upstream content renders in the browser.
+
+    The proxy must strip Content-Encoding before forwarding the (already
+    decoded) body; otherwise the browser gets ERR_CONTENT_DECODING_FAILED
+    and the iframe shows a blank page.
+    """
+
+    def test_proxy_strips_content_encoding_header(self, gzip_site_setup):
+        """Proxy response must NOT carry Content-Encoding even if upstream sends it."""
+        import urllib.request
+        resp = urllib.request.urlopen(
+            f"{gzip_site_setup['dashboard']}/proxy/gzip-app/", timeout=5
+        )
+        # urllib auto-decompresses gzip, but only if the header is present;
+        # if the proxy correctly strips Content-Encoding the body is plain text.
+        body = resp.read().decode("utf-8")
+        assert "Gzip Home" in body
+        # Response must not carry Content-Encoding
+        ce = resp.headers.get("Content-Encoding")
+        assert ce is None, f"Content-Encoding leaked to client: {ce}"
+
+    def test_iframe_renders_gzip_content(self, gzip_site_setup, browser_context):
+        """Gzip-compressed upstream must render visible text in the iframe."""
+        page = browser_context.new_page()
+        page.goto(f"{gzip_site_setup['dashboard']}/gzip-app", wait_until="domcontentloaded")
+        frame_loc = _wait_for_iframe_content(page, "#label")
+
+        # Must show actual text, not a blank/broken page
+        label_text = frame_loc.locator("#label").text_content()
+        assert "Gzip Home" in label_text, f"iframe body blank or wrong: {label_text!r}"
+
+        body_text = frame_loc.locator("#body-text").text_content()
+        assert len(body_text) > 0, "iframe body-text paragraph is empty"
+
+    def test_iframe_gzip_content_survives_reload(self, gzip_site_setup, browser_context):
+        """After a page reload, gzip-compressed content still renders (not ERR_CONTENT_DECODING_FAILED)."""
+        page = browser_context.new_page()
+        page.goto(f"{gzip_site_setup['dashboard']}/gzip-app", wait_until="domcontentloaded")
+        _wait_for_iframe_content(page, "#label")
+        time.sleep(0.5)
+
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_selector(".iframe-container.active iframe", timeout=10000)
+        frame_loc2 = page.frame_locator(".iframe-container.active iframe")
+        frame_loc2.locator("#label").wait_for(timeout=15000)
+
+        label_text = frame_loc2.locator("#label").text_content()
+        assert "Gzip Home" in label_text, f"Post-reload iframe body blank or wrong: {label_text!r}"
