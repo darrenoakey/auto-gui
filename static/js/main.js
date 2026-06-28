@@ -57,6 +57,26 @@ function splitRelativeUrl(relativeUrl) {
 }
 
 /**
+ * Return the configured sub-path of a website URL as a relative URL string.
+ *
+ * Because resolve_backend() now returns only the origin for websites, the
+ * path component of the configured URL must be used as the default landing
+ * relative URL so that clicking a path-style website in the sidebar navigates
+ * to the correct page (e.g. 'daily-digest') rather than the origin root.
+ *
+ * Returns '' for port-based processes or URLs with no meaningful path.
+ */
+function defaultRelativeUrl(url, isWebsite) {
+    if (!isWebsite || !url) return '';
+    try {
+        const parsed = new URL(url);
+        return parsed.pathname.replace(/^\/+/, '') + parsed.search + parsed.hash;
+    } catch (_e) {
+        return '';
+    }
+}
+
+/**
  * Combine an iframe base URL with a relative URL from the Auto-GUI route.
  */
 function buildIframeUrl(baseUrl, relativeUrl) {
@@ -240,7 +260,9 @@ function showWelcome() {
  */
 function showProcess(name, port, url, isWebsite, protocol, options) {
     const settings = options || {};
-    const relativeUrl = settings.relativeUrl || '';
+    // For websites the proxy backend is origin-only; the configured URL path
+    // is the landing page. Fall back to it when no explicit relativeUrl is set.
+    const relativeUrl = settings.relativeUrl || defaultRelativeUrl(url, isWebsite);
     const skipPush = settings.skipPush || false;
     const content = document.getElementById('content');
     const welcome = document.getElementById('welcome');
@@ -514,19 +536,25 @@ function startPolling() {
 document.addEventListener('DOMContentLoaded', () => {
     // Set initial history state for the current URL
     if (window.SELECTED_PROCESS) {
-        const relativeUrl = initialRelativeUrl();
-        updateDashboardLocation(window.SELECTED_PROCESS, relativeUrl, true);
-        // Find the matching button and activate that process
+        // Find the matching button first so we can read its url/isWebsite.
         const button = document.querySelector(`[data-name="${window.SELECTED_PROCESS}"]`);
+        const initRelUrl = initialRelativeUrl();
         if (button) {
             const port = button.dataset.port;
             const url = button.dataset.url;
             const isWebsite = button.dataset.isWebsite === 'true';
             const protocol = button.dataset.protocol || 'http';
+            // If the URL has no iframe sub-path (e.g. loading /Daily Digest directly),
+            // use the configured URL's path as the landing relative URL so path-style
+            // websites navigate to their configured sub-path rather than the origin root.
+            const effectiveRelUrl = initRelUrl || defaultRelativeUrl(url, isWebsite);
+            updateDashboardLocation(window.SELECTED_PROCESS, effectiveRelUrl, true);
             showProcess(window.SELECTED_PROCESS, port, url, isWebsite, protocol, {
                 skipPush: true,
-                relativeUrl,
+                relativeUrl: effectiveRelUrl,
             });
+        } else {
+            updateDashboardLocation(window.SELECTED_PROCESS, initRelUrl, true);
         }
     } else {
         history.replaceState({}, '', '/');
