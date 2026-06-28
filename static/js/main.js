@@ -82,6 +82,9 @@ function buildIframeUrl(baseUrl, relativeUrl) {
  *
  * Because all iframes now go through the /proxy/{name} route, they are
  * same-origin with the dashboard, so this always works.
+ *
+ * Returns null when the URL is not under the proxy base (can't determine
+ * app-relative path).
  */
 function relativeUrlFromIframeUrl(iframeUrl, baseUrl) {
     const current = new URL(iframeUrl);
@@ -94,8 +97,12 @@ function relativeUrlFromIframeUrl(iframeUrl, baseUrl) {
     let path = current.pathname;
     if (path.startsWith(basePath)) {
         path = path.slice(basePath.length);
+    } else if (path === base.pathname) {
+        // iframe is at the proxy root (no trailing slash variant) — treat as empty path
+        path = '';
     } else {
-        path = path.replace(/^\/+/, '');
+        // Path is not under the proxy base; can't determine app-relative URL
+        return null;
     }
     return `${path}${current.search}${current.hash}`;
 }
@@ -568,7 +575,17 @@ window.addEventListener('message', (event) => {
     if (!data || data.type !== 'auto-gui:navigate' || typeof data.path !== 'string') {
         return;
     }
-    const relativeUrl = data.path.replace(/^\/+/, '');
+    // Normalize: supports both app-relative ('/page') and proxy-prefixed
+    // ('/proxy/name/page') paths. The proxy shim sends app-relative, but
+    // third-party bridges may send full proxy paths.
+    let relativeUrl;
+    try {
+        const fullUrl = new URL(data.path, window.location.origin).href;
+        const normalized = relativeUrlFromIframeUrl(fullUrl, container.dataset.baseUrl);
+        relativeUrl = normalized !== null ? normalized : data.path.replace(/^\/+/, '');
+    } catch (_e) {
+        relativeUrl = data.path.replace(/^\/+/, '');
+    }
     // Skip if nothing changed — prevents duplicate history entries when the
     // bridge reports the same location on every request-location poll.
     if (relativeUrl === container.dataset.relativeUrl) {
