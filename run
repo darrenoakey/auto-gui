@@ -51,6 +51,7 @@ def run_test(args):
         sys.executable, "-m", "pytest",
         str(src_dir),
         "-v",
+        "-W", "error",
     ]
 
     if args.pattern:
@@ -72,6 +73,7 @@ def run_check(args):
         sys.executable, "-m", "pytest",
         str(src_dir),
         "-v",
+        "-W", "error",
     ])
 
     if result.returncode != 0:

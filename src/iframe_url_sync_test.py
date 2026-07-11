@@ -81,11 +81,12 @@ def _start_dashboard(port: int):
         host="127.0.0.1",
         port=port,
         log_level="error",
+        ws="none",
     )
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-    return server
+    return server, thread
 
 
 @pytest.fixture
@@ -116,7 +117,7 @@ def live_setup():
         p.start()
 
     child_server = _start_child_server(child_port)
-    dashboard_server = _start_dashboard(dashboard_port)
+    dashboard_server, dashboard_thread = _start_dashboard(dashboard_port)
 
     import urllib.request
     for _ in range(50):
@@ -134,7 +135,9 @@ def live_setup():
     }
 
     dashboard_server.should_exit = True
+    dashboard_thread.join(timeout=5)
     child_server.shutdown()
+    child_server.server_close()
     for p in patches:
         p.stop()
 
@@ -355,7 +358,7 @@ def path_site_setup():
         p.start()
 
     site_server = _start_path_site_server(site_port)
-    dashboard_server = _start_dashboard(dashboard_port)
+    dashboard_server, dashboard_thread = _start_dashboard(dashboard_port)
 
     import urllib.request
     for _ in range(50):
@@ -374,7 +377,9 @@ def path_site_setup():
     }
 
     dashboard_server.should_exit = True
+    dashboard_thread.join(timeout=5)
     site_server.shutdown()
+    site_server.server_close()
     for p in patches:
         p.stop()
 
@@ -407,7 +412,10 @@ class TestPathStyleWebsite:
             urllib.request.urlopen(bad_url, timeout=5)
             assert False, "Expected 404"
         except urllib.error.HTTPError as exc:
-            assert exc.code == 404
+            try:
+                assert exc.code == 404
+            finally:
+                exc.close()
 
     def test_landing_iframe_src_is_sub_path(self, path_site_setup, browser_context):
         """Clicking a path-style website loads the configured sub-path in the iframe."""
@@ -528,7 +536,7 @@ def gzip_site_setup():
         p.start()
 
     gzip_server = _start_gzip_site_server(site_port)
-    dashboard_server = _start_dashboard(dashboard_port)
+    dashboard_server, dashboard_thread = _start_dashboard(dashboard_port)
 
     import urllib.request
     for _ in range(50):
@@ -546,7 +554,9 @@ def gzip_site_setup():
     }
 
     dashboard_server.should_exit = True
+    dashboard_thread.join(timeout=5)
     gzip_server.shutdown()
+    gzip_server.server_close()
     for p in patches:
         p.stop()
 
