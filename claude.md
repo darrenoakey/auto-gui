@@ -59,6 +59,8 @@ The server triggers icon generation based on file existence (`has_icon(name)`), 
 
 Same-origin iframe navigation is reflected into the Auto-GUI URL directly, including SPA `history.pushState`/`replaceState` calls and hash route changes after the iframe loads. Cross-origin iframes, including most `localhost:<port>` apps framed by `localhost:2000`, cannot be inspected by the parent page due browser same-origin policy. Those apps must opt in with `window.parent.postMessage({type: "auto-gui:navigate", path: "/current/path?x=1#section"}, "*")` when their route changes.
 
+The injected proxy shim must rewrite both root-relative URLs and absolute URLs whose origin equals the Auto-GUI page origin. Proxied apps can construct requests as `window.location.origin + "/api/..."`; leaving those absolute same-origin URLs unchanged sends them into Auto-GUI's catch-all route, which returns dashboard HTML with HTTP 200 and makes the embedded app appear permanently loading when JSON parsing fails. Preserve query strings and hashes, do not double-prefix already-proxied paths, and leave genuinely external origins unchanged. `proxy_test.py::TestShimBrowserRewriting` covers fetch strings, `Request`, XHR, history navigation, exact prefix boundaries, and external URLs in Chromium.
+
 ### is_html Persistence
 Once a process is identified as `is_html: true`, it **stays that way forever** - never rechecked or downgraded. This prevents GUI apps from disappearing if they're temporarily unavailable during a scan. Non-HTML processes continue to be checked (they might become GUI apps). A GUI app only disappears when completely removed from auto.
 
