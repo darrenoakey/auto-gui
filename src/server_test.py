@@ -1,4 +1,5 @@
 """Tests for server module."""
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 import pytest
@@ -67,11 +68,11 @@ class TestIndexRoute:
         ):
             # Import after patching
             from server import app
-            client = TestClient(app)
-            response = client.get("/")
-            assert response.status_code == 200
-            assert "test-app" in response.text
-            assert "api-app" in response.text
+            with closing(TestClient(app)) as client:
+                response = client.get("/")
+                assert response.status_code == 200
+                assert "test-app" in response.text
+                assert "api-app" in response.text
 
 
 class TestApiProcesses:
@@ -84,14 +85,14 @@ class TestApiProcesses:
             patch("server.background_scanner", new_callable=AsyncMock),
         ):
             from server import app
-            client = TestClient(app)
-            response = client.get("/api/processes")
-            assert response.status_code == 200
-            data = response.json()
-            assert "processes" in data
-            assert "last_scan" in data
-            assert len(data["processes"]) == 2
-            assert "server_pid" in data
+            with closing(TestClient(app)) as client:
+                response = client.get("/api/processes")
+                assert response.status_code == 200
+                data = response.json()
+                assert "processes" in data
+                assert "last_scan" in data
+                assert len(data["processes"]) == 2
+                assert "server_pid" in data
 
 
 class TestApiScan:
@@ -105,12 +106,12 @@ class TestApiScan:
             patch("server.background_scanner", new_callable=AsyncMock),
         ):
             from server import app
-            client = TestClient(app)
-            response = client.post("/api/scan")
-            assert response.status_code == 200
-            data = response.json()
-            assert data["status"] == "ok"
-            assert "last_scan" in data
+            with closing(TestClient(app)) as client:
+                response = client.post("/api/scan")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["status"] == "ok"
+                assert "last_scan" in data
 
 
 class TestScanAndUpdateProcesses:
@@ -238,12 +239,12 @@ class TestProcessPageRoute:
             patch("server.background_scanner", new_callable=AsyncMock),
         ):
             from server import app
-            client = TestClient(app)
-            response = client.get("/grafana")
-            assert response.status_code == 200
-            assert "SELECTED_PROCESS" in response.text
-            assert '"grafana"' in response.text
-            assert 'SELECTED_IFRAME_PATH = ""' in response.text
+            with closing(TestClient(app)) as client:
+                response = client.get("/grafana")
+                assert response.status_code == 200
+                assert "SELECTED_PROCESS" in response.text
+                assert '"grafana"' in response.text
+                assert 'SELECTED_IFRAME_PATH = ""' in response.text
 
     def test_renders_with_selected_process_path(self, mock_state, mock_processes):
         with (
@@ -254,12 +255,12 @@ class TestProcessPageRoute:
             patch("server.background_scanner", new_callable=AsyncMock),
         ):
             from server import app
-            client = TestClient(app)
-            response = client.get("/grafana/reports/daily")
-            assert response.status_code == 200
-            assert "SELECTED_PROCESS" in response.text
-            assert '"grafana"' in response.text
-            assert 'SELECTED_IFRAME_PATH = "reports/daily"' in response.text
+            with closing(TestClient(app)) as client:
+                response = client.get("/grafana/reports/daily")
+                assert response.status_code == 200
+                assert "SELECTED_PROCESS" in response.text
+                assert '"grafana"' in response.text
+                assert 'SELECTED_IFRAME_PATH = "reports/daily"' in response.text
 
     def test_api_processes_not_shadowed(self, mock_state, mock_processes):
         """Ensure /api/processes still returns JSON, not caught by /{name}."""
@@ -271,11 +272,11 @@ class TestProcessPageRoute:
             patch("server.background_scanner", new_callable=AsyncMock),
         ):
             from server import app
-            client = TestClient(app)
-            response = client.get("/api/processes")
-            assert response.status_code == 200
-            data = response.json()
-            assert "processes" in data
+            with closing(TestClient(app)) as client:
+                response = client.get("/api/processes")
+                assert response.status_code == 200
+                data = response.json()
+                assert "processes" in data
 
     def test_index_has_null_selected_process(self, mock_state, mock_processes):
         """Ensure GET / passes null for selected_process."""
@@ -287,11 +288,11 @@ class TestProcessPageRoute:
             patch("server.background_scanner", new_callable=AsyncMock),
         ):
             from server import app
-            client = TestClient(app)
-            response = client.get("/")
-            assert response.status_code == 200
-            assert "SELECTED_PROCESS = null" in response.text
-            assert 'SELECTED_IFRAME_PATH = ""' in response.text
+            with closing(TestClient(app)) as client:
+                response = client.get("/")
+                assert response.status_code == 200
+                assert "SELECTED_PROCESS = null" in response.text
+                assert 'SELECTED_IFRAME_PATH = ""' in response.text
 
 
 class TestScanInterval:
@@ -397,9 +398,10 @@ class TestSmokeE2E:
             timeout=5000,
         )
         # Go back
-        page.go_back()
+        page.go_back(wait_until="commit")
         page.wait_for_function(
-            "() => window.location.pathname === '/'",
+            "() => window.location.pathname === '/' && "
+            "document.querySelector('#welcome').offsetParent !== null",
             timeout=5000,
         )
         # Welcome should be visible again

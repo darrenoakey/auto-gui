@@ -3,6 +3,7 @@ FastAPI server for auto-gui.
 Web dashboard for auto-managed processes.
 """
 import asyncio
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -193,7 +194,6 @@ app.mount("/icons", StaticFiles(directory=str(icons_dir)), name="icons")
 templates = Jinja2Templates(directory=str(templates_dir))
 
 
-import os
 SERVER_PID = os.getpid()
 
 
@@ -208,7 +208,7 @@ async def state_error_handler(_request: Request, exc: StateError):
 
 @app.api_route("/proxy/{name}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 @app.api_route("/proxy/{name}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-async def proxy_route(name: str, path: str = "", request: Request = None):
+async def proxy_route(request: Request, name: str, path: str = ""):
     """Transparent reverse proxy: routes iframe traffic through Auto-GUI so
     embedded apps become same-origin, enabling automatic URL tracking."""
     return await proxy_http_request(name, path, request)
@@ -216,7 +216,7 @@ async def proxy_route(name: str, path: str = "", request: Request = None):
 
 @app.websocket("/proxy/{name}")
 @app.websocket("/proxy/{name}/{path:path}")
-async def proxy_ws_route(name: str, path: str = "", ws: WebSocket = None):
+async def proxy_ws_route(ws: WebSocket, name: str, path: str = ""):
     """Proxy WebSocket upgrades through Auto-GUI."""
     await proxy_websocket(name, path, ws)
 

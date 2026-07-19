@@ -14,12 +14,16 @@ Design principles:
 """
 import asyncio
 from collections import Counter, deque
+import hashlib
 from io import BytesIO
+import json
+import os
 from pathlib import Path
+import stat
 from typing import Optional
+import uuid
 
-import httpx
-from daz_agent_sdk import agent, Tier
+from daz_agent_sdk import ImageResult, agent, Tier
 from PIL import Image
 
 from state_manager import (
@@ -39,12 +43,10 @@ _change_version = 0
 RATE_LIMIT_MAX_RETRIES = 5
 RATE_LIMIT_INITIAL_BACKOFF_SECONDS = 1.0
 RATE_LIMIT_MAX_BACKOFF_SECONDS = 30.0
-ICON_IMAGE_SERVER_URL = "http://10.0.0.46:8830"
 ICON_IMAGE_WIDTH = 128
 ICON_IMAGE_HEIGHT = 128
-ICON_IMAGE_POLL_SECONDS = 3.0
-ICON_IMAGE_MAX_WAIT_SECONDS = 1800.0
-ICON_IMAGE_RESPONSE_LIMIT_BYTES = 25 * 1024 * 1024
+ICON_IMAGE_PROVIDER = "codex"
+ICON_IMAGE_MODEL = "macmini-image-service"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 # Icon generation queue - items are (name, is_website) tuples
@@ -242,38 +244,25 @@ def has_icon(name: str) -> bool:
 
 def atomic_swap(temp_path: Path, final_path: Path) -> bool:
     """
-    Atomically swaps a temp file into place.
-    - Renames final_path to final_path.old (if exists)
-    - Renames temp_path to final_path
-    - Deletes final_path.old
-
-    Returns True on success, False on failure.
-    The old file stays in place until the new one is ready.
+    Atomically replaces the old icon only after the temporary PNG fully validates.
     """
-    old_path = final_path.with_suffix(final_path.suffix + ".old")
-
     try:
-        # Move existing file to .old (if exists)
-        if final_path.exists():
-            final_path.rename(old_path)
-
-        # Move temp file to final location
-        temp_path.rename(final_path)
-
-        # Delete old file
-        if old_path.exists():
-            old_path.unlink()
-
+        validate_icon_png_file(temp_path)
+        os.replace(temp_path, final_path)
         return True
     except Exception as e:
         print(f"Atomic swap failed: {e}")
-        # Try to restore old file if something went wrong
-        if old_path.exists() and not final_path.exists():
-            try:
-                old_path.rename(final_path)
-            except Exception:
-                pass
         return False
+
+
+def validate_icon_png_file(path: Path) -> None:
+    """Fully decodes the exact PNG dimensions required by the dashboard."""
+    if not path.is_file() or path.stat().st_size == 0:
+        raise ValueError(f"Icon PNG is missing or empty: {path}")
+    with Image.open(path) as image:
+        if image.format != "PNG" or image.size != (ICON_IMAGE_WIDTH, ICON_IMAGE_HEIGHT):
+            raise ValueError(f"Icon must be a {ICON_IMAGE_WIDTH}x{ICON_IMAGE_HEIGHT} PNG: {path}")
+        image.verify()
 
 
 def load_icon_prompt(name: str) -> Optional[str]:
@@ -460,27 +449,141 @@ def save_icon_prompt(name: str, prompt: str) -> None:
 
 async def generate_icon_async(prompt: str, output_path: Path) -> bool:
     """
-    Calls the mac mini image generation service to create an icon.
-    Writes the generated PNG to output_path.
+    Generates one durable Codex icon and writes a validated PNG to output_path.
     """
+    operation = get_icon_image_operation(prompt, output_path)
     try:
-        image_data = await generate_icon_image_bytes(prompt)
-        output_path.write_bytes(image_data)
-        return output_path.exists() and output_path.read_bytes().startswith(PNG_SIGNATURE)
+        result = await agent.image(
+            prompt,
+            width=ICON_IMAGE_WIDTH,
+            height=ICON_IMAGE_HEIGHT,
+            output=operation["output"],
+            transparent=True,
+            timeout=None,
+            provider=ICON_IMAGE_PROVIDER,
+            model=None,
+            idempotency_key=operation["idempotency_key"],
+            operation_state=operation["operation_state"],
+        )
+        validate_icon_image_result(result, operation, prompt)
+        write_validated_icon_png(output_path, normalize_icon_png(output_path.read_bytes()))
+        return True
     except Exception as e:
         print(f"Icon generation failed: {e}")
+        output_path.unlink(missing_ok=True)
         return False
 
 
-async def generate_icon_image_bytes(prompt: str) -> bytes:
-    """Submits, waits for, and fetches an icon image from the image service."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        job_id = await submit_image_job(client, prompt)
-        await wait_for_image_job(client, job_id)
-        image_data = await fetch_image_job(client, job_id)
-    if not image_data.startswith(PNG_SIGNATURE):
-        raise ValueError(f"image job {job_id} returned non-png data")
-    return normalize_icon_png(image_data)
+def get_icon_image_operation(prompt: str, output_path: Path) -> dict[str, str]:
+    """Returns deterministic caller-owned identity and state for one exact icon request."""
+    absolute_output = output_path.expanduser().absolute()
+    request_identity = json.dumps(
+        {
+            "height": ICON_IMAGE_HEIGHT,
+            "output": str(absolute_output),
+            "prompt": prompt,
+            "transparent": True,
+            "width": ICON_IMAGE_WIDTH,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    operation_id = hashlib.sha256(request_identity).hexdigest()
+    operation_root = get_local_dir() / "image-operations"
+    operation_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if stat.S_IMODE(operation_root.stat().st_mode) != 0o700:
+        raise PermissionError(f"Icon operation directory must be owner-only: {operation_root}")
+    return {
+        "idempotency_key": f"auto-gui:icon:{operation_id}",
+        "operation_state": str(operation_root / f"{operation_id}.json"),
+        "output": str(absolute_output),
+    }
+
+
+def validate_icon_image_result(
+    result: ImageResult,
+    operation: dict[str, str],
+    expected_prompt: str,
+) -> None:
+    """Rejects non-terminal, rerouted, or identity-mismatched SDK image results."""
+    expected_output = Path(operation["output"])
+    failures = []
+    if result.ready is not True or result.status != "done":
+        failures.append(f"terminal state ready={result.ready!r} status={result.status!r}")
+    if result.provider != ICON_IMAGE_PROVIDER or result.model_used.provider != ICON_IMAGE_PROVIDER:
+        failures.append(f"provider result={result.provider!r} model={result.model_used.provider!r}")
+    if result.model_used.model_id != ICON_IMAGE_MODEL:
+        failures.append(f"model={result.model_used.model_id!r}")
+    if not result.job_id.strip() or result.idempotency_key != operation["idempotency_key"]:
+        failures.append("missing or mismatched durable job identity")
+    if result.path != expected_output:
+        failures.append(f"path={result.path!s} expected={expected_output!s}")
+    if result.prompt != expected_prompt:
+        failures.append("prompt does not match the exact request")
+    if (result.width, result.height) != (ICON_IMAGE_WIDTH, ICON_IMAGE_HEIGHT):
+        failures.append(
+            f"metadata dimensions={result.width}x{result.height} "
+            f"expected={ICON_IMAGE_WIDTH}x{ICON_IMAGE_HEIGHT}"
+        )
+    if failures:
+        raise RuntimeError(
+            f"Mac mini Codex image job {result.job_id or '<missing>'} returned invalid metadata: "
+            + "; ".join(failures)
+        )
+    validate_icon_operation_state(result, operation, expected_prompt)
+
+
+def validate_icon_operation_state(
+    result: ImageResult,
+    operation: dict[str, str],
+    expected_prompt: str,
+) -> None:
+    """Proves the SDK persisted the exact request and its single durable job identity."""
+    state_path = Path(operation["operation_state"])
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    expected_request = json.dumps(
+        {
+            "prompt": expected_prompt,
+            "width": ICON_IMAGE_WIDTH,
+            "height": ICON_IMAGE_HEIGHT,
+            "transparent": True,
+        },
+        separators=(",", ":"),
+    )
+    failures = []
+    if stat.S_IMODE(state_path.stat().st_mode) != 0o600:
+        failures.append("operation state is not owner-only")
+    if state.get("request_body") != expected_request:
+        failures.append("request body does not match")
+    if state.get("output_path") != operation["output"]:
+        failures.append("output path does not match")
+    if state.get("idempotency_key") != operation["idempotency_key"]:
+        failures.append("idempotency key does not match")
+    if state.get("job_id") != result.job_id:
+        failures.append("job identity does not match")
+    if failures:
+        raise RuntimeError(
+            f"Mac mini Codex image job {result.job_id} returned invalid durable operation state: "
+            + "; ".join(failures)
+        )
+
+
+def write_validated_icon_png(output_path: Path, image_data: bytes) -> None:
+    """Atomically installs fully decoded PNG bytes at the temporary icon path."""
+    validated_path = output_path.with_name(f".{output_path.name}.{uuid.uuid4()}.validated")
+    try:
+        with validated_path.open("xb") as stream:
+            stream.write(image_data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        with Image.open(validated_path) as image:
+            if image.format != "PNG" or image.size != (ICON_IMAGE_WIDTH, ICON_IMAGE_HEIGHT):
+                raise ValueError(f"Generated icon is not a {ICON_IMAGE_WIDTH}x{ICON_IMAGE_HEIGHT} PNG")
+            image.verify()
+        os.replace(validated_path, output_path)
+    finally:
+        validated_path.unlink(missing_ok=True)
 
 
 def normalize_icon_png(image_data: bytes) -> bytes:
@@ -567,63 +670,6 @@ def is_background_pixel(pixel: tuple[int, int, int, int], colours: list[tuple[in
         if distance <= 32**2:
             return True
     return False
-
-
-async def submit_image_job(client: httpx.AsyncClient, prompt: str) -> str:
-    """Submits one image generation job and returns its durable job id."""
-    response = await client.post(
-        f"{ICON_IMAGE_SERVER_URL}/jobs",
-        json={
-            "prompt": prompt,
-            "width": ICON_IMAGE_WIDTH,
-            "height": ICON_IMAGE_HEIGHT,
-            "transparent": True,
-        },
-    )
-    response.raise_for_status()
-    job_id = response.json().get("id", "").strip()
-    if not job_id:
-        raise ValueError("image server returned empty job id")
-    return job_id
-
-
-async def wait_for_image_job(client: httpx.AsyncClient, job_id: str) -> None:
-    """Polls the image service until the job finishes or fails."""
-    deadline = asyncio.get_running_loop().time() + ICON_IMAGE_MAX_WAIT_SECONDS
-    while True:
-        status = await get_image_job_status(client, job_id)
-        state = status.get("status")
-        if state == "done":
-            return
-        if state == "failed":
-            attempts = status.get("attempts", 0)
-            error = status.get("error", "")
-            raise RuntimeError(f"image job {job_id} failed after {attempts} attempts: {error}")
-        if state not in {"queued", "running"}:
-            raise RuntimeError(f"image job {job_id} returned unknown status {state!r}")
-        if asyncio.get_running_loop().time() >= deadline:
-            raise TimeoutError(f"image job {job_id} timed out after {ICON_IMAGE_MAX_WAIT_SECONDS:.0f}s")
-        await asyncio.sleep(ICON_IMAGE_POLL_SECONDS)
-
-
-async def get_image_job_status(client: httpx.AsyncClient, job_id: str) -> dict:
-    """Fetches image generation job status."""
-    response = await client.get(f"{ICON_IMAGE_SERVER_URL}/jobs/{job_id}")
-    response.raise_for_status()
-    return response.json()
-
-
-async def fetch_image_job(client: httpx.AsyncClient, job_id: str) -> bytes:
-    """Fetches generated PNG bytes for a completed image job."""
-    response = await client.get(f"{ICON_IMAGE_SERVER_URL}/jobs/{job_id}/image")
-    response.raise_for_status()
-    content_type = response.headers.get("content-type", "")
-    if "image/png" not in content_type.lower():
-        raise ValueError(f"image job {job_id} returned content type {content_type!r}")
-    image_data = response.content
-    if len(image_data) > ICON_IMAGE_RESPONSE_LIMIT_BYTES:
-        raise ValueError(f"image job {job_id} exceeded 25MiB response limit")
-    return image_data
 
 
 async def process_app_async(name: str, port: Optional[int], workdir: Optional[str]) -> None:

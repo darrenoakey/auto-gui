@@ -4,6 +4,8 @@
 
 A clean, beautiful web dashboard that lets you see all your background services at a glance. If you use [auto](https://github.com/darrenoakey/auto) to manage long-running processes, Auto-GUI gives them a home — complete with status indicators, clickable links, and auto-generated icons.
 
+Icons use daz-agent-sdk's durable Codex-only image API. Each exact request has a deterministic operation identity, resumes the same IGS job across ambiguous submissions or restarts, waits without an overall deadline, validates the completed PNG, and replaces an existing icon atomically only after validation succeeds.
+
 ## Getting Started
 
 Install the dependencies:

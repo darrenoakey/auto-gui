@@ -1,27 +1,28 @@
 """Tests for icon_generator module."""
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
+import inspect
 import json
-import threading
+from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+from daz_agent_sdk import agent
 import pytest
 from PIL import Image
 
 from icon_generator import (
     PNG_SIGNATURE,
-    fetch_image_job,
     FAILURE_COOLDOWN_SCANS,
-    get_image_job_status,
     MAX_CONSECUTIVE_FAILURES,
     _failure_counts,
+    atomic_swap,
     find_readme,
     generate_icon_async,
-    submit_image_job,
     generate_icon_for_process,
     generate_summary_async,
     get_change_version,
+    get_icon_image_operation,
     get_icon_path,
     get_summary_path,
     has_icon,
@@ -31,68 +32,7 @@ from icon_generator import (
     normalize_icon_png,
     queue_icon_generation,
     save_summary,
-    wait_for_image_job,
 )
-
-
-class ImageServiceHarness:
-    def __init__(self, statuses=None, image_data=None, image_content_type="image/png"):
-        self.statuses = list(statuses or [{"id": "job-123", "status": "done"}])
-        self.image_data = image_data or PNG_SIGNATURE + b"payload"
-        self.image_content_type = image_content_type
-        self.requests = []
-        self.server = None
-        self.thread = None
-
-    def __enter__(self):
-        harness = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                body = self.rfile.read(int(self.headers.get("content-length", "0")))
-                harness.requests.append((self.command, self.path, body))
-                if self.path != "/jobs":
-                    self.send_error(404)
-                    return
-                self.send_response(202)
-                self.send_header("content-type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"id": "job-123"}).encode("utf-8"))
-
-            def do_GET(self):
-                harness.requests.append((self.command, self.path, b""))
-                if self.path == "/jobs/job-123":
-                    payload = harness.statuses.pop(0) if harness.statuses else {"id": "job-123", "status": "done"}
-                    self.send_response(200)
-                    self.send_header("content-type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(json.dumps(payload).encode("utf-8"))
-                    return
-                if self.path == "/jobs/job-123/image":
-                    self.send_response(200)
-                    self.send_header("content-type", harness.image_content_type)
-                    self.end_headers()
-                    self.wfile.write(harness.image_data)
-                    return
-                self.send_error(404)
-
-            def log_message(self, _format, *_args):
-                return
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever)
-        self.thread.start()
-        return self
-
-    def __exit__(self, _exc_type, _exc, _tb):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=5)
-
-    @property
-    def url(self):
-        host, port = self.server.server_address
-        return f"http://{host}:{port}"
 
 
 def make_png_bytes(mode="RGBA", size=(16, 16), colour=(20, 120, 220, 255)) -> bytes:
@@ -183,54 +123,97 @@ class TestGenerateIconForProcess:
 
 
 class TestGenerateIconAsync:
-    @pytest.mark.asyncio
-    async def test_generates_icon_from_image_service(self, tmp_path):
-        output_path = tmp_path / "icon.png"
-        png_data = make_png_bytes()
+    def test_real_igs_submit_recovery_and_png_validation(self):
+        output_path = Path(__file__).resolve().parent.parent / "output" / "testing" / "durable-icon.png"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt = (
+            "A bold simple 3D isometric blue toolbox app icon on a completely flat coral background, "
+            "one substantial object, no text, fill the frame"
+        )
+        operation = get_icon_image_operation(prompt, output_path)
+        state_path = Path(operation["operation_state"])
 
-        with ImageServiceHarness(
-            statuses=[
-                {"id": "job-123", "status": "queued"},
-                {"id": "job-123", "status": "running"},
-                {"id": "job-123", "status": "done"},
-            ],
-            image_data=png_data,
-        ) as service:
-            with (
-                patch("icon_generator.ICON_IMAGE_SERVER_URL", service.url),
-                patch("icon_generator.ICON_IMAGE_POLL_SECONDS", 0.001),
-            ):
-                result = await generate_icon_async("prompt", output_path)
+        assert inspect.signature(agent.image).parameters["timeout"].default is None
+        script = """
+import asyncio
+import json
+import sys
+from pathlib import Path
+from icon_generator import generate_icon_async, get_icon_image_operation
 
-        assert json.loads(service.requests[0][2]) == {
-            "prompt": "prompt",
-            "width": 128,
-            "height": 128,
-            "transparent": True,
-        }
-        assert [request[1] for request in service.requests] == [
-            "/jobs",
-            "/jobs/job-123",
-            "/jobs/job-123",
-            "/jobs/job-123",
-            "/jobs/job-123/image",
-        ]
-        assert result is True
-        assert output_path.exists()
+async def run():
+    prompt = sys.argv[1]
+    output = Path(sys.argv[2])
+    operation = get_icon_image_operation(prompt, output)
+    state_path = Path(operation["operation_state"])
+    assert await generate_icon_async(prompt, output)
+    first = json.loads(state_path.read_text(encoding="utf-8"))
+    output.unlink()
+    assert await generate_icon_async(prompt, output)
+    recovered = json.loads(state_path.read_text(encoding="utf-8"))
+    print(json.dumps({"first": first, "recovered": recovered}, separators=(",", ":")))
+
+asyncio.run(run())
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", script, prompt, str(output_path)],
+            cwd=Path(__file__).resolve().parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        evidence = json.loads(completed.stdout.strip().splitlines()[-1])
+        first_state = evidence["first"]
+        first_job_id = first_state["job_id"]
+        recovered_state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert recovered_state == evidence["recovered"]
+        assert first_job_id
+        assert first_state["idempotency_key"] == operation["idempotency_key"]
+        assert recovered_state["job_id"] == first_job_id
+        assert recovered_state["idempotency_key"] == operation["idempotency_key"]
         with Image.open(output_path) as image:
+            assert image.format == "PNG"
             assert image.size == (128, 128)
             assert image.mode == "RGBA"
 
     @pytest.mark.asyncio
-    async def test_returns_false_when_image_generation_fails(self, tmp_path):
+    async def test_returns_false_for_conflicting_durable_state(self, tmp_path):
         output_path = tmp_path / "icon.png"
-
-        with ImageServiceHarness(statuses=[{"id": "job-123", "status": "failed", "error": "service broke"}]) as service:
-            with patch("icon_generator.ICON_IMAGE_SERVER_URL", service.url):
-                result = await generate_icon_async("prompt", output_path)
+        prompt = "durable identity conflict proof"
+        operation = get_icon_image_operation(prompt, output_path)
+        state_path = Path(operation["operation_state"])
+        state_path.write_text("{}", encoding="utf-8")
+        state_path.chmod(0o600)
+        try:
+            result = await generate_icon_async(prompt, output_path)
+        finally:
+            state_path.unlink(missing_ok=True)
+            state_path.with_name(state_path.name + ".lock").unlink(missing_ok=True)
 
         assert result is False
         assert not output_path.exists()
+
+    def test_operation_identity_is_exact_and_deterministic(self, tmp_path):
+        output_path = tmp_path / "icon.png"
+        first = get_icon_image_operation("exact prompt", output_path)
+        replay = get_icon_image_operation("exact prompt", output_path)
+        changed_prompt = get_icon_image_operation("changed prompt", output_path)
+        changed_output = get_icon_image_operation("exact prompt", tmp_path / "other.png")
+
+        assert first == replay
+        assert first["idempotency_key"] != changed_prompt["idempotency_key"]
+        assert first["idempotency_key"] != changed_output["idempotency_key"]
+        assert first["operation_state"] != changed_prompt["operation_state"]
+
+    def test_invalid_temporary_icon_preserves_previous_icon(self, tmp_path):
+        final_path = tmp_path / "icon.png"
+        temporary_path = tmp_path / "icon.tmp.png"
+        previous = make_png_bytes(size=(128, 128), colour=(10, 20, 30, 255))
+        final_path.write_bytes(previous)
+        temporary_path.write_bytes(PNG_SIGNATURE + b"truncated")
+
+        assert atomic_swap(temporary_path, final_path) is False
+        assert final_path.read_bytes() == previous
 
 
 class TestNormalizeIconPng:
@@ -266,85 +249,6 @@ class TestNormalizeIconPng:
             assert result.size == (128, 128)
             assert alpha.getextrema()[0] == 0
             assert result.convert("RGBA").getpixel((64, 64))[3] > 200
-
-
-class TestImageServiceClient:
-    @pytest.mark.asyncio
-    async def test_submit_image_job_posts_prompt_and_dimensions(self):
-        with ImageServiceHarness() as service:
-            async with httpx.AsyncClient() as client:
-                with patch("icon_generator.ICON_IMAGE_SERVER_URL", service.url):
-                    job_id = await submit_image_job(client, "make an icon")
-
-        assert job_id == "job-123"
-        assert service.requests[0][0] == "POST"
-        assert service.requests[0][1] == "/jobs"
-        assert json.loads(service.requests[0][2]) == {
-            "prompt": "make an icon",
-            "width": 128,
-            "height": 128,
-            "transparent": True,
-        }
-
-    @pytest.mark.asyncio
-    async def test_get_image_job_status_decodes_json(self):
-        with ImageServiceHarness(statuses=[{"id": "job-123", "status": "done"}]) as service:
-            async with httpx.AsyncClient() as client:
-                with patch("icon_generator.ICON_IMAGE_SERVER_URL", service.url):
-                    status = await get_image_job_status(client, "job-123")
-
-        assert status == {"id": "job-123", "status": "done"}
-
-    @pytest.mark.asyncio
-    async def test_wait_for_image_job_polls_until_done(self):
-        with ImageServiceHarness(
-            statuses=[
-                {"id": "job-123", "status": "queued"},
-                {"id": "job-123", "status": "running"},
-                {"id": "job-123", "status": "done"},
-            ]
-        ) as service:
-            async with httpx.AsyncClient() as client:
-                with (
-                    patch("icon_generator.ICON_IMAGE_SERVER_URL", service.url),
-                    patch("icon_generator.ICON_IMAGE_POLL_SECONDS", 0.001),
-                ):
-                    await wait_for_image_job(client, "job-123")
-
-        assert [request[1] for request in service.requests] == [
-            "/jobs/job-123",
-            "/jobs/job-123",
-            "/jobs/job-123",
-        ]
-
-    @pytest.mark.asyncio
-    async def test_wait_for_image_job_raises_on_failure(self):
-        with ImageServiceHarness(
-            statuses=[{"id": "job-123", "status": "failed", "attempts": 2, "error": "service broke"}]
-        ) as service:
-            async with httpx.AsyncClient() as client:
-                with patch("icon_generator.ICON_IMAGE_SERVER_URL", service.url):
-                    with pytest.raises(RuntimeError, match="service broke"):
-                        await wait_for_image_job(client, "job-123")
-
-    @pytest.mark.asyncio
-    async def test_fetch_image_job_returns_png_bytes(self):
-        png_data = PNG_SIGNATURE + b"payload"
-
-        with ImageServiceHarness(image_data=png_data) as service:
-            async with httpx.AsyncClient() as client:
-                with patch("icon_generator.ICON_IMAGE_SERVER_URL", service.url):
-                    image_data = await fetch_image_job(client, "job-123")
-
-        assert image_data == png_data
-
-    @pytest.mark.asyncio
-    async def test_fetch_image_job_rejects_non_png_content_type(self):
-        with ImageServiceHarness(image_content_type="text/plain") as service:
-            async with httpx.AsyncClient() as client:
-                with patch("icon_generator.ICON_IMAGE_SERVER_URL", service.url):
-                    with pytest.raises(ValueError, match="content type"):
-                        await fetch_image_job(client, "job-123")
 
 
 class TestFailureCooldown:

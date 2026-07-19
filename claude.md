@@ -26,7 +26,7 @@ local/                  # Runtime artifacts (gitignored)
 The icon generator uses a 3-step **cascading** pipeline. NO timestamp checking - only checks if files exist:
 1. Summary file → created if missing (uses daz-agent-sdk)
 2. Icon prompt file → created if missing (or if step 1 ran)
-3. PNG → created if missing (or if step 2 ran), using the mac mini image generation service at `http://10.0.0.46:8830`
+3. PNG → created if missing (or if step 2 ran), using daz-agent-sdk's public durable Codex-only image API
 
 **Key design principle**: If any step runs, ALL downstream steps run (`force_downstream` boolean passed through the chain).
 
@@ -40,7 +40,9 @@ The icon generator uses a 3-step **cascading** pipeline. NO timestamp checking -
 Icon generation runs in a **separate background worker**, completely decoupled from the main server:
 - Queue-based processing with duplicate prevention
 - Server startup doesn't trigger icon generation (deferred until server is fully running)
-- Uses the mac mini image generation service for image generation via submit/poll/fetch job endpoints
+- Uses daz-agent-sdk >=0.2.17 with a deterministic caller-owned idempotency key and operation-state file
+- The durable SDK operation recovers the same accepted job after ambiguous submission or process restart; it never creates a replacement job for the same request
+- Waits without an overall image-generation deadline and leaves the previous icon installed until a fully decoded PNG is ready
 - One item processed at a time to avoid overwhelming the system
 
 ### daz-agent-sdk (NOT raw Anthropic API)
@@ -91,7 +93,7 @@ All tests are in `src/*_test.py` files. Run with `pytest src/`.
 - Process list is sorted alphabetically - sorting happens both server-side (`get_all_visible_items`) and client-side (JS rebuilds list on each poll)
 - Dead vs removed: processes still in auto's state.json but not running are "dead" (shown with ✕), processes completely removed from auto are hidden
 - Popout button uses event.target check in `handleButtonClick()` to distinguish clicks on the ↗ from clicks on the main button
-- The icon generator uses the mac mini image service at `http://10.0.0.46:8830` (`POST /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/image`). Do not switch icon generation back to `agent.image()` providers.
+- The icon generator uses only `agent.image()` from daz-agent-sdk >=0.2.17. Pass `provider="codex"`, no model or inference overrides, `timeout=None`, and the deterministic caller-owned `idempotency_key` plus `operation_state`; never add a direct IGS HTTP client or alternate provider.
 - The mac mini service may return an RGB PNG with a checkerboard background even when `transparent: true`; keep `normalize_icon_png()` in the pipeline so saved dashboard icons are 128x128 RGBA with real alpha.
 - `SCAN_INTERVAL` is 30 seconds (not 10 minutes) — dead/alive detection should be responsive
 - **State file permission errors**: macOS sandbox can cause transient `PermissionError` on launchd-spawned processes accessing files on external drives. The `StateError` exception provides clear recovery hints (`auto -q restart auto-gui`). Smoke tests in `state_manager_test.py` verify accessibility.
