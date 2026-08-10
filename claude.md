@@ -63,6 +63,8 @@ Same-origin iframe navigation is reflected into the Auto-GUI URL directly, inclu
 
 The injected proxy shim must rewrite both root-relative URLs and absolute URLs whose origin equals the Auto-GUI page origin. Proxied apps can construct requests as `window.location.origin + "/api/..."`; leaving those absolute same-origin URLs unchanged sends them into Auto-GUI's catch-all route, which returns dashboard HTML with HTTP 200 and makes the embedded app appear permanently loading when JSON parsing fails. Preserve query strings and hashes, do not double-prefix already-proxied paths, and leave genuinely external origins unchanged. `proxy_test.py::TestShimBrowserRewriting` covers fetch strings, `Request`, XHR, history navigation, exact prefix boundaries, and external URLs in Chromium.
 
+Port-based apps use the canonical `/proxy/{name}/` directory URL so relative assets resolve beneath the app prefix; path-style websites keep the slashless proxy base because their configured path may identify a concrete object. The shim rewrites `EventSource` URLs as well as fetch/XHR/WebSocket URLs. `text/event-stream` responses are forwarded incrementally with their upstream headers, no SSE read deadline, downstream backpressure, and guaranteed upstream closure when the client disconnects; other response types retain buffered rewrite behavior.
+
 ### is_html Persistence
 Once a process is identified as `is_html: true`, it **stays that way forever** - never rechecked or downgraded. This prevents GUI apps from disappearing if they're temporarily unavailable during a scan. Non-HTML processes continue to be checked (they might become GUI apps). A GUI app only disappears when completely removed from auto.
 

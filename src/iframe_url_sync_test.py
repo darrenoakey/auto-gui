@@ -10,7 +10,7 @@ import socket
 import sys
 import threading
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -51,9 +51,29 @@ function replaceNav() {{
 
 
 def _start_child_server(port: int) -> HTTPServer:
+    first_sse_event = threading.Event()
+    sse_disconnected = threading.Event()
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             path = self.path.split("?")[0].split("#")[0]
+            if path == "/events":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-SSE-Test", "streaming")
+                self.end_headers()
+                try:
+                    self.wfile.write(b"data: first\n\n")
+                    self.wfile.flush()
+                    first_sse_event.set()
+                    while True:
+                        time.sleep(0.05)
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    sse_disconnected.set()
+                return
             labels = {"/": "Home", "/page2": "Page2", "/page3": "Page3"}
             body = _child_page(labels.get(path, "Other"))
             self.send_response(200)
@@ -65,7 +85,9 @@ def _start_child_server(port: int) -> HTTPServer:
         def log_message(self, _format: str, *_args) -> None:  # type: ignore[override]
             pass
 
-    server = HTTPServer(("127.0.0.1", port), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server.first_sse_event = first_sse_event
+    server.sse_disconnected = sse_disconnected
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
@@ -132,6 +154,7 @@ def live_setup():
         "dashboard": f"http://127.0.0.1:{dashboard_port}",
         "child": child_url,
         "dashboard_port": dashboard_port,
+        "child_server": child_server,
     }
 
     dashboard_server.should_exit = True
@@ -162,6 +185,29 @@ def _wait_for_iframe_content(page, selector="#label", timeout=15000):
 
 
 class TestIframeUrlSync:
+    def test_port_app_uses_canonical_proxy_directory_url(self, live_setup, browser_context):
+        page = browser_context.new_page()
+        page.goto(f"{live_setup['dashboard']}/child-app", wait_until="domcontentloaded")
+        _wait_for_iframe_content(page)
+        iframe_src = page.locator(".iframe-container.active iframe").get_attribute("src")
+        assert iframe_src == f"{live_setup['dashboard']}/proxy/child-app/"
+
+    def test_sse_streams_first_byte_with_headers_and_closes_upstream(self, live_setup):
+        import httpx
+
+        url = f"{live_setup['dashboard']}/proxy/child-app/events?channel=chat"
+        started = time.monotonic()
+        with httpx.stream("GET", url, timeout=5) as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            assert response.headers["cache-control"] == "no-cache"
+            assert response.headers["x-sse-test"] == "streaming"
+            assert next(response.iter_lines()) == "data: first"
+            assert time.monotonic() - started < 2
+
+        assert live_setup["child_server"].first_sse_event.is_set()
+        assert live_setup["child_server"].sse_disconnected.wait(2)
+
     def test_click_navigation_updates_dashboard_url(self, live_setup, browser_context):
         """Clicking a link inside a proxied iframe updates the dashboard URL."""
         page = browser_context.new_page()

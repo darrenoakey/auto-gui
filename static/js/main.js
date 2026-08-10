@@ -31,7 +31,8 @@ const REQUIRED_SUCCESSES = 2;  // Require 2 successful polls before refreshing
  * URL tracking for ALL apps with zero per-app changes.
  */
 function buildBaseUrl(port, url, isWebsite, protocol, name) {
-    return `/proxy/${encodeURIComponent(name)}`;
+    const base = `/proxy/${encodeURIComponent(name)}`;
+    return isWebsite ? base : `${base}/`;
 }
 
 /**

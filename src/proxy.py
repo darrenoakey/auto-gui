@@ -11,7 +11,7 @@ The proxy:
   * Rewrites absolute / root-relative URLs in HTML so navigation stays inside
     the proxy.
   * Injects a small script that monkeypatches ``fetch``, ``XMLHttpRequest``,
-    ``history.pushState/replaceState`` and the ``WebSocket`` constructor so
+    ``history.pushState/replaceState``, ``EventSource`` and the ``WebSocket`` constructor so
     dynamic (SPA) requests and client-side routing also stay inside the proxy.
   * Rewrites ``Location`` redirect headers.
   * Rewrites ``url()`` references in CSS.
@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import Request, WebSocket
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 
 # ---------------------------------------------------------------------------
 # Backend lookup
@@ -200,6 +200,13 @@ def _build_shim(prefix: str) -> str:
         "if(window.XMLHttpRequest){var oo=XMLHttpRequest.prototype.open;"
         "XMLHttpRequest.prototype.open=function(m,u){"
         "arguments[1]=rw(u);return oo.apply(this,arguments);};}"
+        # --- EventSource ---
+        "if(window.EventSource){var OE=window.EventSource;"
+        "window.EventSource=function(u,options){"
+        "return options!==undefined?new OE(rw(u),options):new OE(rw(u));};"
+        "window.EventSource.prototype=OE.prototype;"
+        "Object.defineProperties(window.EventSource,{CONNECTING:{value:OE.CONNECTING},"
+        "OPEN:{value:OE.OPEN},CLOSED:{value:OE.CLOSED}});}"
         # --- WebSocket ---
         "if(window.WebSocket){var OW=window.WebSocket;"
         "window.WebSocket=function(u,protocols){"
@@ -286,13 +293,14 @@ async def proxy_http_request(
 
     client = await _get_client()
     try:
-        upstream = await client.request(
+        upstream_request = client.build_request(
             method=request.method,
             url=backend_url,
             headers=fwd_headers,
             content=body,
             params=request.query_params,
         )
+        upstream = await client.send(upstream_request, stream=True)
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         return Response(
             content=f"Backend unreachable: {exc}",
@@ -316,7 +324,29 @@ async def proxy_http_request(
         resp_headers.pop("Location", None)
 
     content_type = upstream.headers.get("content-type", "")
-    content = upstream.content
+    if "text/event-stream" in content_type.lower():
+        # SSE connections are intentionally unbounded after their response
+        # headers arrive; an idle event stream is still a healthy connection.
+        upstream.request.extensions["timeout"]["read"] = None
+
+        async def stream_events():
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
+            finally:
+                await upstream.aclose()
+
+        return StreamingResponse(
+            stream_events(),
+            status_code=upstream.status_code,
+            headers=resp_headers,
+            media_type=content_type or None,
+        )
+
+    try:
+        content = await upstream.aread()
+    finally:
+        await upstream.aclose()
 
     if "text/html" in content_type:
         content = rewrite_html(

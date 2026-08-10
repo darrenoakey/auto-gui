@@ -96,6 +96,17 @@ class TestRewriteCss:
         assert "/proxy/app/images/bg.png" in result
 
 
+class TestRewriteHtml:
+    def test_shim_rewrites_event_source_urls(self):
+        result = rewrite_html(
+            "<html><head></head><body></body></html>",
+            "/proxy/app",
+            "http://example.com",
+        )
+        assert "window.EventSource=function(u,options)" in result
+        assert "new OE(rw(u),options)" in result
+
+
 class TestContentEncodingStrip:
     """Verify that Content-Encoding is never forwarded to the browser.
 
@@ -182,6 +193,16 @@ Promise.all([
                 self.wfile.write(html)
                 return
 
+            if self.path.startswith("/proxy/app/events"):
+                received_paths.append(self.path)
+                body = b"data: connected\n\n"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
             received_paths.append(self.path)
             body = json.dumps({"path": self.path}).encode()
             self.send_response(200)
@@ -217,6 +238,25 @@ Promise.all([
 
 
 class TestShimBrowserRewriting:
+    def test_event_source_is_proxied_and_preserves_query_and_hash(self, shim_browser_site):
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            page.goto(f"{shim_browser_site['origin']}/proxy/app/")
+            event_source_url = page.evaluate(
+                """() => {
+                    const source = new EventSource('/events?channel=chat#latest');
+                    const url = source.url;
+                    source.close();
+                    return url;
+                }"""
+            )
+            browser.close()
+
+        assert event_source_url.endswith("/proxy/app/events?channel=chat#latest")
+
     def test_same_origin_absolute_requests_are_proxied_and_external_origin_is_not(
         self, shim_browser_site
     ):
