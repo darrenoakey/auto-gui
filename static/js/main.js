@@ -302,6 +302,7 @@ function showProcess(name, port, url, isWebsite, protocol, options) {
         const iframe = document.createElement('iframe');
         iframe.src = buildIframeUrl(container.dataset.baseUrl, relativeUrl);
         iframe.title = name;
+        iframe.allow = 'microphone; autoplay';
         iframe.onload = () => {
             container.classList.remove('loading');
             const replace = container.dataset.replaceOnNextLoad === 'true';
