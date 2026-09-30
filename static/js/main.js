@@ -8,8 +8,9 @@ const loadedIframes = new Map();
 let currentProcess = null;
 let processListSignature = '';
 
-// Poll interval (10 seconds for faster updates during icon generation)
-const POLL_INTERVAL = 10000;
+// Ask once a minute whether the sidebar moved. The answer is almost always no.
+const POLL_INTERVAL = 60000;
+let changeRevision = 0;
 
 // Interval for checking whether the active iframe's URL has changed (1.5 seconds).
 // This catches full-page navigations inside same-origin iframes that the
@@ -19,9 +20,6 @@ const LOCATION_POLL_INTERVAL = 1500;
 
 // Server state tracking
 let serverAvailable = true;
-let needsRefresh = false;
-let consecutiveSuccesses = 0;
-const REQUIRED_SUCCESSES = 2;  // Require 2 successful polls before refreshing
 
 /**
  * Build the proxy base URL for a process or manual website.
@@ -401,71 +399,60 @@ function showProcess(name, port, url, isWebsite, protocol, options) {
 }
 
 /**
- * Poll for process updates and check for server restart
+ * One cheap poll. A no does no further work. A yes names what moved.
  */
-async function pollProcesses() {
+async function pollChanges() {
     try {
-        const response = await fetch('/api/processes');
-
-        // Check for non-OK response
+        const response = await fetch(`/api/changes?since=${changeRevision}`, {
+            cache: 'no-store',
+        });
         if (!response.ok) {
             handleServerUnavailable();
             return;
         }
-
         const data = await response.json();
+        serverAvailable = true;
 
-        // Server is responding - mark as available
-        if (!serverAvailable) {
-            console.log('Server is back online');
-            serverAvailable = true;
-        }
-
-        // Check if server has restarted (different PID)
         if (data.server_pid !== window.SERVER_PID) {
-            console.log('Server PID changed, marking for refresh...');
-            needsRefresh = true;
+            location.reload();
+            return;
         }
-
-        // If we need a refresh, wait for consecutive successes before reloading
-        if (needsRefresh) {
-            consecutiveSuccesses++;
-            console.log(`Server stable check ${consecutiveSuccesses}/${REQUIRED_SUCCESSES}`);
-            if (consecutiveSuccesses >= REQUIRED_SUCCESSES) {
-                console.log('Server confirmed stable, refreshing page...');
-                location.reload(true);
-                return;
-            }
-            // Don't update UI while waiting for refresh
+        if (!data.changed) {
             return;
         }
 
-        // Reset success counter on normal operation
-        consecutiveSuccesses = 0;
-
-        // Check for content changes (icons, summaries)
-        if (data.change_version !== window.CHANGE_VERSION) {
-            console.log('Content changed, updating...');
-            window.CHANGE_VERSION = data.change_version;
+        changeRevision = data.revision;
+        const types = new Set((data.changes || []).map(change => change.type));
+        if (types.size > 0) {
+            await refreshProcessList();
         }
-
-        updateProcessList(data.processes);
-        updateLastScan(data.last_scan);
-    } catch (error) {
+    } catch (_error) {
         handleServerUnavailable();
     }
+}
+
+/**
+ * Load the sidebar only after the change feed says it moved.
+ */
+async function refreshProcessList() {
+    const response = await fetch('/api/processes', {cache: 'no-store'});
+    if (!response.ok) {
+        handleServerUnavailable();
+        return;
+    }
+    const data = await response.json();
+    if (data.change_version !== window.CHANGE_VERSION) {
+        window.CHANGE_VERSION = data.change_version;
+    }
+    updateProcessList(data.processes);
+    updateLastScan(data.last_scan);
 }
 
 /**
  * Handle server being unavailable
  */
 function handleServerUnavailable() {
-    if (serverAvailable) {
-        console.log('Server unavailable, waiting for it to come back...');
-        serverAvailable = false;
-    }
-    // Reset consecutive successes - need fresh count when server returns
-    consecutiveSuccesses = 0;
+    serverAvailable = false;
 }
 
 /**
@@ -618,7 +605,8 @@ function checkActiveIframeLocation() {
  * Start polling for updates
  */
 function startPolling() {
-    setInterval(pollProcesses, POLL_INTERVAL);
+    changeRevision = window.CHANGE_REVISION || 0;
+    setInterval(pollChanges, POLL_INTERVAL);
     setInterval(checkActiveIframeLocation, LOCATION_POLL_INTERVAL);
 }
 

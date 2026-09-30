@@ -109,6 +109,42 @@ class TestApiProcesses:
                 assert "server_pid" in data
 
 
+class TestApiChanges:
+    def test_current_client_gets_no(self, mock_state):
+        from changes import reset, revision
+        reset()
+        with (
+            patch("server.scan_and_update_processes", new_callable=AsyncMock),
+            patch("server.background_scanner", new_callable=AsyncMock),
+            patch("server.get_icons_dir", return_value=mock_state / "local" / "icons"),
+        ):
+            from server import app
+            with closing(TestClient(app)) as client:
+                response = client.get(f"/api/changes?since={revision()}")
+                assert response.status_code == 200
+                assert response.headers["cache-control"] == "no-store"
+                body = response.json()
+                assert body["changed"] is False
+                assert body["revision"] == revision()
+                assert "server_pid" in body
+
+    def test_a_real_change_names_its_type(self, mock_state):
+        from changes import note, reset
+        reset()
+        note("icons", name="child")
+        with (
+            patch("server.scan_and_update_processes", new_callable=AsyncMock),
+            patch("server.background_scanner", new_callable=AsyncMock),
+            patch("server.get_icons_dir", return_value=mock_state / "local" / "icons"),
+        ):
+            from server import app
+            with closing(TestClient(app)) as client:
+                response = client.get("/api/changes?since=0")
+                body = response.json()
+                assert body["changed"] is True
+                assert body["changes"] == [{"type": "icons", "seq": 1}]
+
+
 class TestApiScan:
     def test_triggers_scan(self, mock_state):
         mock_scan = AsyncMock()

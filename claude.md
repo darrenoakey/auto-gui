@@ -90,7 +90,7 @@ All tests are in `src/*_test.py` files. Run with `pytest src/`.
 - CSS `.process-icon` should NOT have a background color (interferes with transparency)
 - CSS backdrop-filter (frosting) should only be on sidebar, not the main content area
 - Icon prompts need explicit requirements: flat solid background (no gradients), bold simple shapes for tiny display, high contrast
-- Frontend polling is tolerant of server restarts - waits for consecutive successful polls before refreshing
+- Frontend asks `GET /api/changes?since=<revision>` once a minute. The usual body is `{"changed": false}`. A yes carries typed messages (`processes`, `icons`, `websites`, `resync`); only then does the client fetch `/api/processes`. Do not poll the full list, and do not treat `last_scan` or an unchanged process rewrite as a change. A different `server_pid` reloads the page.
 - **Use `auto -q restart auto-gui`** to restart the server, never `./run serve` directly
 - Process list is sorted alphabetically - sorting happens both server-side (`get_all_visible_items`) and client-side (JS rebuilds list on each poll)
 - Dead vs removed: processes still in auto's state.json but not running are "dead" (shown with ✕), processes completely removed from auto are hidden
@@ -100,4 +100,4 @@ All tests are in `src/*_test.py` files. Run with `pytest src/`.
 - `SCAN_INTERVAL` is 30 seconds (not 10 minutes) — dead/alive detection should be responsive
 - **State file permission errors**: macOS sandbox can cause transient `PermissionError` on launchd-spawned processes accessing files on external drives. The `StateError` exception provides clear recovery hints (`auto -q restart auto-gui`). Smoke tests in `state_manager_test.py` verify accessibility.
 - **A live PID can stop listening and hang the page for days.** auto only restarts dead PIDs. `src/health.py` probes `http://127.0.0.1:<port>/healthz` from a thread and `os._exit`s after 3 failures (~1 minute) so watch respawns it. `/healthz` must stay free of state and scans. Lifespan must yield before the process scan, or a stuck scan leaves the socket accepting with nobody answering. `HEALTH_PORT` is set only by `./run serve`; tests leave it unset so the probe cannot kill pytest.
-- **A healthy `/healthz` can still leave the browser hung.** Safari/Chrome allow six HTTP/1.1 connections per host. Proxied chat streams and `?v=Date.now()` icon reloads used to occupy all six, so clicks queued forever. Do not put iframe `src` back on the dashboard host, do not keep hidden iframes loaded, and do not cache-bust icons on every poll.
+- **A healthy `/healthz` can still leave the browser hung.** Safari/Chrome allow six HTTP/1.1 connections per host. Proxied chat streams used to occupy all six, so clicks queued forever. Do not put iframe `src` back on the dashboard host, do not keep hidden iframes loaded, and do not poll icons or `/api/processes` on a timer.

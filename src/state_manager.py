@@ -7,6 +7,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from changes import note
+
+_PROCESS_FIELDS = ("port", "is_html", "visible", "is_dead", "protocol")
+_ICON_FIELDS = ("icon_path", "icon_status", "description")
+_WEBSITE_FIELDS = ("url", "visible")
+
 
 def get_project_root() -> Path:
     """Returns the absolute path to the auto-gui project directory."""
@@ -92,6 +98,20 @@ def get_process(name: str) -> Optional[dict]:
     return state["processes"].get(name)
 
 
+def _types_for(before: dict, after: dict, groups: tuple[tuple[str, tuple[str, ...]], ...]) -> list[str]:
+    """Change types whose fields differ. Empty means the dashboard did not move."""
+    types = []
+    for change_type, fields in groups:
+        if any(before.get(field) != after.get(field) for field in fields):
+            types.append(change_type)
+    return types
+
+
+def _note_each(types: list[str], name: str) -> None:
+    for change_type in types:
+        note(change_type, name=name)
+
+
 def update_process(
     name: str,
     port: Optional[int] = None,
@@ -109,8 +129,9 @@ def update_process(
     Returns the updated process dict.
     """
     state = load_state()
+    is_new = name not in state["processes"]
 
-    if name not in state["processes"]:
+    if is_new:
         state["processes"][name] = {
             "name": name,
             "port": None,
@@ -126,6 +147,8 @@ def update_process(
         }
 
     process = state["processes"][name]
+    before = {field: process.get(field) for field in _PROCESS_FIELDS + _ICON_FIELDS}
+    previous_workdir = process.get("workdir")
 
     if port is not None:
         process["port"] = port
@@ -146,26 +169,44 @@ def update_process(
     if protocol is not None:
         process["protocol"] = protocol
 
+    types = _types_for(
+        before,
+        process,
+        (("processes", _PROCESS_FIELDS), ("icons", _ICON_FIELDS)),
+    )
+    if is_new and "processes" not in types:
+        types.insert(0, "processes")
+    workdir_changed = workdir is not None and previous_workdir != process.get("workdir")
+    if not types and not workdir_changed and not is_new:
+        return process
+
     process["last_seen"] = datetime.now().isoformat()
 
     save_state(state)
+    _note_each(types, name)
     return process
 
 
 def mark_process_invisible(name: str) -> None:
     """Marks a process as invisible (removed from auto entirely)."""
     state = load_state()
-    if name in state["processes"]:
-        state["processes"][name]["visible"] = False
-        save_state(state)
+    process = state["processes"].get(name)
+    if process is None or process.get("visible") is False:
+        return
+    process["visible"] = False
+    save_state(state)
+    note("processes", name=name)
 
 
 def mark_process_dead(name: str) -> None:
     """Marks a process as dead (registered in auto but not running)."""
     state = load_state()
-    if name in state["processes"]:
-        state["processes"][name]["is_dead"] = True
-        save_state(state)
+    process = state["processes"].get(name)
+    if process is None or process.get("is_dead") is True:
+        return
+    process["is_dead"] = True
+    save_state(state)
+    note("processes", name=name)
 
 
 def get_visible_html_processes() -> list[dict]:
@@ -206,6 +247,7 @@ def add_website(name: str, url: str) -> dict:
         "is_website": True,
     }
     save_state(state)
+    note("websites", name=name)
     return state["websites"][name]
 
 
@@ -218,6 +260,7 @@ def remove_website(name: str) -> bool:
     if name in state["websites"]:
         del state["websites"][name]
         save_state(state)
+        note("websites", name=name)
         return True
     return False
 
@@ -242,6 +285,7 @@ def update_website(
         return
 
     website = state["websites"][name]
+    before = {field: website.get(field) for field in _WEBSITE_FIELDS + _ICON_FIELDS}
     if url is not None:
         website["url"] = url
     if visible is not None:
@@ -253,7 +297,16 @@ def update_website(
     if description is not None:
         website["description"] = description
 
+    types = _types_for(
+        before,
+        website,
+        (("websites", _WEBSITE_FIELDS), ("icons", _ICON_FIELDS)),
+    )
+    if not types:
+        return
+
     save_state(state)
+    _note_each(types, name)
 
 
 def list_websites() -> list[dict]:

@@ -129,6 +129,25 @@ class TestUpdateProcess:
         assert result["port"] == 8080
         assert result["workdir"] == "/path/to/app"
 
+    def test_repeat_scan_and_last_scan_are_not_changes(self, temp_state_dir):
+        from changes import poll, reset
+        reset()
+        update_process("myapp", port=8080, is_html=True, is_dead=False, protocol="http")
+        since = poll(0)["revision"]
+        update_process("myapp", port=8080, is_html=True, is_dead=False, protocol="http")
+        update_last_scan()
+        assert poll(since) == {"changed": False, "revision": since}
+
+    def test_icon_status_is_its_own_change_type(self, temp_state_dir):
+        from changes import poll, reset
+        reset()
+        update_process("myapp", port=8080, is_html=True)
+        since = poll(0)["revision"]
+        update_process("myapp", icon_status="ready")
+        body = poll(since)
+        assert body["changed"] is True
+        assert body["changes"] == [{"type": "icons", "seq": body["revision"]}]
+
 
 class TestMarkProcessInvisible:
     def test_marks_invisible(self, temp_state_dir):

@@ -6,13 +6,15 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from health import start_health_watch
 from html_checker import check_port_returns_html
+from changes import poll as poll_changes
+from changes import revision as change_revision
 from icon_generator import (
     get_change_version,
     has_icon,
@@ -239,22 +241,34 @@ async def healthz():
     return "ok"
 
 
+def _page_context(items, last_scan, selected, iframe_path):
+    return {
+        "processes": items,
+        "last_scan": last_scan,
+        "server_pid": SERVER_PID,
+        "change_revision": change_revision(),
+        "selected_process": selected,
+        "selected_iframe_path": iframe_path,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Render the main dashboard page."""
-    items = get_all_visible_items()
-    last_scan = get_last_scan()
     return templates.TemplateResponse(
         request,
         "index.html",
-        {
-            "processes": items,
-            "last_scan": last_scan,
-            "server_pid": SERVER_PID,
-            "selected_process": None,
-            "selected_iframe_path": "",
-        },
+        _page_context(get_all_visible_items(), get_last_scan(), None, ""),
     )
+
+
+@app.get("/api/changes")
+async def api_changes(response: Response, since: int = 0):
+    """Cheap poll. Unchanged renders are {"changed": false}; a yes names types."""
+    response.headers["Cache-Control"] = "no-store"
+    body = poll_changes(since)
+    body["server_pid"] = SERVER_PID
+    return body
 
 
 @app.get("/api/processes")
@@ -281,16 +295,8 @@ async def api_scan():
 @app.get("/{name}/{iframe_path:path}", response_class=HTMLResponse)
 async def process_page(request: Request, name: str, iframe_path: str = ""):
     """Render the dashboard with a specific process selected via URL."""
-    items = get_all_visible_items()
-    last_scan = get_last_scan()
     return templates.TemplateResponse(
         request,
         "index.html",
-        {
-            "processes": items,
-            "last_scan": last_scan,
-            "server_pid": SERVER_PID,
-            "selected_process": name,
-            "selected_iframe_path": iframe_path,
-        },
+        _page_context(get_all_visible_items(), get_last_scan(), name, iframe_path),
     )
