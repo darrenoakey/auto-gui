@@ -6,6 +6,7 @@
 // Store for loaded iframes
 const loadedIframes = new Map();
 let currentProcess = null;
+let processListSignature = '';
 
 // Poll interval (10 seconds for faster updates during icon generation)
 const POLL_INTERVAL = 10000;
@@ -25,13 +26,29 @@ const REQUIRED_SUCCESSES = 2;  // Require 2 successful polls before refreshing
 /**
  * Build the proxy base URL for a process or manual website.
  *
- * All iframe traffic is routed through Auto-GUI's reverse proxy (/proxy/{name})
- * so that every embedded app is same-origin with the dashboard. This lets the
- * parent page read iframe.contentWindow.location directly — enabling automatic
- * URL tracking for ALL apps with zero per-app changes.
+ * Iframe traffic goes through the reverse proxy on the other loopback host
+ * (localhost <-> 127.0.0.1), same port. Browsers allow only six HTTP/1.1
+ * connections per host. Long-lived proxied streams (SSE, hot-reload) must not
+ * share that pool with the dashboard, or the sidebar and clicks queue forever
+ * while /healthz still answers.
+ *
+ * URL tracking still works: the injected shim posts auto-gui:navigate. The
+ * same-origin history bridge remains as a fallback when the hosts match.
  */
+function proxyFrameOrigin() {
+    const host = window.location.hostname;
+    let frameHost = host;
+    if (host === 'localhost' || host === '::1' || host === '[::1]') {
+        frameHost = '127.0.0.1';
+    } else if (host === '127.0.0.1') {
+        frameHost = 'localhost';
+    }
+    const port = window.location.port ? `:${window.location.port}` : '';
+    return `${window.location.protocol}//${frameHost}${port}`;
+}
+
 function buildBaseUrl(port, url, isWebsite, protocol, name) {
-    const base = `/proxy/${encodeURIComponent(name)}`;
+    const base = `${proxyFrameOrigin()}/proxy/${encodeURIComponent(name)}`;
     return isWebsite ? base : `${base}/`;
 }
 
@@ -235,13 +252,53 @@ function handleButtonClick(event, name, port, url, isWebsite, protocol) {
 }
 
 /**
- * Show the welcome screen and clear current selection
+ * Drop the network activity of an iframe that is not on screen.
+ *
+ * Hidden iframes used to keep SSE and hot-reload sockets open. Those sockets
+ * count against the browser's six-connection cap and freeze every Auto-GUI tab.
  */
+function parkIframe(container) {
+    const iframe = container.querySelector('iframe');
+    if (!iframe) {
+        return;
+    }
+    const src = iframe.getAttribute('src') || '';
+    if (!src || src === 'about:blank') {
+        return;
+    }
+    container.dataset.parkedSrc = iframe.src;
+    iframe.src = 'about:blank';
+}
+
+function releaseInactiveIframes(activeName) {
+    loadedIframes.forEach((container, name) => {
+        if (name !== activeName) {
+            parkIframe(container);
+        }
+    });
+}
+
+function resumeIframe(container) {
+    const parked = container.dataset.parkedSrc;
+    if (!parked) {
+        return;
+    }
+    const iframe = container.querySelector('iframe');
+    delete container.dataset.parkedSrc;
+    if (iframe && iframe.src !== parked) {
+        container.classList.add('loading');
+        container.dataset.replaceOnNextLoad = 'true';
+        iframe.src = parked;
+    }
+}
+
 function showWelcome() {
     const welcome = document.getElementById('welcome');
     if (welcome) {
         welcome.style.display = '';
     }
+
+    releaseInactiveIframes(null);
 
     // Hide all iframes
     document.querySelectorAll('.iframe-container').forEach(container => {
@@ -272,6 +329,8 @@ function showProcess(name, port, url, isWebsite, protocol, options) {
     if (welcome) {
         welcome.style.display = 'none';
     }
+
+    releaseInactiveIframes(name);
 
     // Hide all iframes
     document.querySelectorAll('.iframe-container').forEach(container => {
@@ -304,6 +363,9 @@ function showProcess(name, port, url, isWebsite, protocol, options) {
         iframe.title = name;
         iframe.allow = 'microphone; autoplay';
         iframe.onload = () => {
+            if (container.dataset.parkedSrc || iframe.src === 'about:blank') {
+                return;
+            }
             container.classList.remove('loading');
             const replace = container.dataset.replaceOnNextLoad === 'true';
             container.dataset.replaceOnNextLoad = 'false';
@@ -314,14 +376,17 @@ function showProcess(name, port, url, isWebsite, protocol, options) {
         container.appendChild(iframe);
         content.appendChild(container);
         loadedIframes.set(name, container);
-    } else if (relativeUrl) {
-        const iframe = container.querySelector('iframe');
-        const nextUrl = buildIframeUrl(container.dataset.baseUrl, relativeUrl);
-        if (iframe && iframe.src !== nextUrl) {
-            container.classList.add('loading');
-            container.dataset.relativeUrl = relativeUrl;
-            container.dataset.replaceOnNextLoad = 'true';
-            iframe.src = nextUrl;
+    } else {
+        resumeIframe(container);
+        if (relativeUrl) {
+            const iframe = container.querySelector('iframe');
+            const nextUrl = buildIframeUrl(container.dataset.baseUrl, relativeUrl);
+            if (iframe && iframe.src !== nextUrl) {
+                container.classList.add('loading');
+                container.dataset.relativeUrl = relativeUrl;
+                container.dataset.replaceOnNextLoad = 'true';
+                iframe.src = nextUrl;
+            }
         }
     }
 
@@ -406,12 +471,35 @@ function handleServerUnavailable() {
 /**
  * Update the process list in the sidebar
  */
+function processListSignatureOf(processes) {
+    const rows = processes.map(process => [
+        process.name,
+        process.port || '',
+        process.url || '',
+        process.is_dead ? '1' : '0',
+        process.icon_status || '',
+        process.protocol || '',
+        process.is_website ? '1' : '0',
+        process.description || '',
+    ].join('\u001f'));
+    return `${rows.join('\u001e')}|${window.CHANGE_VERSION}`;
+}
+
 function updateProcessList(processes) {
     const list = document.getElementById('process-list');
     const currentProcessNames = new Set(processes.map(p => p.name));
 
     // Sort processes alphabetically
     processes.sort((a, b) => a.name.localeCompare(b.name));
+
+    const signature = processListSignatureOf(processes);
+    if (signature === processListSignature && list.querySelector('.process-button')) {
+        list.querySelectorAll('.process-button').forEach(button => {
+            button.classList.toggle('active', button.dataset.name === currentProcess);
+        });
+        return;
+    }
+    processListSignature = signature;
 
     // If selected process disappeared from the list, go back to welcome
     if (currentProcess && !currentProcessNames.has(currentProcess)) {
@@ -457,7 +545,7 @@ function updateProcessList(processes) {
         button.innerHTML = `
             ${isDead ? '<span class="dead-indicator" title="Process not running">✕</span>' : ''}
             <img
-                src="${process.icon_status === 'ready' ? `/icons/${process.name}.png?v=${Date.now()}` : '/static/img/placeholder.png'}"
+                src="${process.icon_status === 'ready' ? `/icons/${encodeURIComponent(process.name)}.png?v=${window.CHANGE_VERSION}` : '/static/img/placeholder.png'}"
                 alt="${process.name}"
                 class="process-icon"
                 onerror="this.src='/static/img/placeholder.png'"

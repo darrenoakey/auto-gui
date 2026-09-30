@@ -1,10 +1,11 @@
 """
 Transparent reverse proxy for Auto-GUI iframe embedding.
 
-Routes all iframe traffic through Auto-GUI itself (``/proxy/{name}/...``) so
-that every embedded app becomes same-origin with the dashboard.  This lets
-the parent page read ``iframe.contentWindow.location`` directly — enabling
-automatic URL tracking for ALL apps with zero per-app changes.
+Routes all iframe traffic through Auto-GUI itself (``/proxy/{name}/...``).
+The dashboard page and the iframe use different loopback hosts so a proxied
+SSE stream cannot exhaust the browser's six HTTP/1.1 connections to the
+dashboard. The injected shim posts ``auto-gui:navigate`` so URL tracking still
+works across that host split.
 
 The proxy:
   * Forwards HTTP requests (all methods) to the backend.
@@ -229,6 +230,9 @@ def _build_shim(prefix: str) -> str:
         "var ohp=history.pushState,ohr=history.replaceState;"
         "history.pushState=function(){var r=ohp.apply(this,arguments);notify();return r;};"
         "history.replaceState=function(){var r=ohr.apply(this,arguments);notify();return r;};"
+        "window.addEventListener('message',function(e){"
+        "var d=e.data;if(d&&d.type==='auto-gui:request-location')notify();});"
+        "notify();"
         "})();"
         "</script>"
     )
@@ -253,6 +257,11 @@ def rewrite_css(css: str, prefix: str, backend_origin: str) -> str:
 # HTTP proxy
 # ---------------------------------------------------------------------------
 
+# A hung non-stream upstream must release the browser connection quickly.
+# Safari allows six HTTP/1.1 connections per host; a 30s read used to pin one
+# of them and make the dashboard look frozen.
+NON_STREAM_TIMEOUT = httpx.Timeout(8.0, connect=5.0)
+
 # Reusable async client — created lazily on first use.
 _client: httpx.AsyncClient | None = None
 
@@ -263,7 +272,7 @@ async def _get_client() -> httpx.AsyncClient:
         _client = httpx.AsyncClient(
             follow_redirects=False,
             verify=False,  # local dev servers often use self-signed certs
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=NON_STREAM_TIMEOUT,
         )
     return _client
 
@@ -301,10 +310,15 @@ async def proxy_http_request(
             params=request.query_params,
         )
         upstream = await client.send(upstream_request, stream=True)
-    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+    except httpx.ConnectError as exc:
         return Response(
             content=f"Backend unreachable: {exc}",
             status_code=502,
+        )
+    except httpx.TimeoutException as exc:
+        return Response(
+            content=f"Backend timed out: {exc}",
+            status_code=504,
         )
 
     prefix = proxy_prefix(name)
@@ -343,10 +357,18 @@ async def proxy_http_request(
             media_type=content_type or None,
         )
 
+    timed_out: httpx.TimeoutException | None = None
     try:
         content = await upstream.aread()
+    except httpx.TimeoutException as exc:
+        timed_out = exc
     finally:
         await upstream.aclose()
+    if timed_out is not None:
+        return Response(
+            content=f"Backend timed out: {timed_out}",
+            status_code=504,
+        )
 
     if "text/html" in content_type:
         content = rewrite_html(

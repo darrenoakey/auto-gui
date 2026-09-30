@@ -1,6 +1,7 @@
 """Tests for proxy.py helpers and browser URL rewriting."""
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
@@ -298,3 +299,64 @@ class TestShimBrowserRewriting:
                 f"{shim_browser_site['origin']}/proxy/app/connections?state=ready#active"
             )
             browser.close()
+
+
+class TestHungUpstream:
+    def test_non_stream_read_timeout_releases_the_browser_connection(self):
+        """A silent upstream must not hold the proxy open for the old 30s timeout."""
+        import httpx
+
+        import proxy
+        from fastapi import FastAPI, Request
+
+        from proxy import NON_STREAM_TIMEOUT, proxy_http_request
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                for _ in range(300):
+                    if getattr(server, "stopping", False):
+                        return
+                    time.sleep(0.1)
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        proxy._client = None
+        app = FastAPI()
+
+        @app.get("/proxy/{name}/{path:path}")
+        async def route(name: str, path: str, request: Request):
+            return await proxy_http_request(name, path, request)
+
+        started = time.monotonic()
+        proxy.NON_STREAM_TIMEOUT = httpx.Timeout(0.4, connect=0.4)
+        try:
+            with patch(
+                "proxy.get_all_visible_items",
+                return_value=[{"name": "slow", "port": port, "protocol": "http"}],
+            ):
+                transport = httpx.ASGITransport(app=app)
+
+                async def fetch():
+                    async with httpx.AsyncClient(
+                        transport=transport, base_url="http://test", timeout=5
+                    ) as client:
+                        return await client.get("/proxy/slow/hang")
+
+                import anyio
+
+                response = anyio.run(fetch)
+            elapsed = time.monotonic() - started
+        finally:
+            server.stopping = True
+            server.shutdown()
+            server.server_close()
+            proxy.NON_STREAM_TIMEOUT = NON_STREAM_TIMEOUT
+            proxy._client = None
+        assert response.status_code == 504
+        assert elapsed < 3
+        assert NON_STREAM_TIMEOUT.read == 8.0

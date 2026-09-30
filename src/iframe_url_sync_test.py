@@ -1,9 +1,10 @@
 """E2E test for automatic iframe URL tracking via reverse proxy.
 
 Spins up the real auto-gui server (with a patched state pointing at a child
-HTTP server) and uses Playwright to verify that navigating inside a cross-origin
-iframe automatically updates the dashboard URL — with ZERO per-app changes
-(no bridge script needed, since the proxy makes everything same-origin).
+HTTP server) and uses Playwright to verify that navigating inside a proxied
+iframe automatically updates the dashboard URL. The iframe is on the other
+loopback host so its streams cannot exhaust the dashboard connection pool;
+the injected shim reports location changes.
 """
 import gzip as gzip_module
 import socket
@@ -12,6 +13,7 @@ import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -74,6 +76,17 @@ def _start_child_server(port: int) -> HTTPServer:
                 except (BrokenPipeError, ConnectionResetError):
                     sse_disconnected.set()
                 return
+            if path == "/hold":
+                body = (
+                    b"<!DOCTYPE html><html><body><h1 id=\"label\">Hold</h1>"
+                    b"<script>new EventSource('/events');</script></body></html>"
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             labels = {"/": "Home", "/page2": "Page2", "/page3": "Page3"}
             body = _child_page(labels.get(path, "Other"))
             self.send_response(200)
@@ -98,15 +111,31 @@ def _start_dashboard(port: int):
     sys.path.insert(0, str(project_root / "src"))
     import uvicorn
 
+    # localhost resolves to ::1 before 127.0.0.1. The iframe uses the other
+    # loopback host, so the test server must accept both or the frame never loads.
+    sockets = []
+    for family, address in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if family == socket.AF_INET6:
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        sock.bind((address, port))
+        sock.listen(128)
+        sockets.append(sock)
     config = uvicorn.Config(
         "server:app",
-        host="127.0.0.1",
-        port=port,
         log_level="error",
         ws="none",
     )
     server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
+    server._test_sockets = sockets
+
+    def _run() -> None:
+        import asyncio
+
+        asyncio.run(server.serve(sockets=sockets))
+
+    thread = threading.Thread(target=_run, daemon=True)
     thread.start()
     return server, thread
 
@@ -158,9 +187,20 @@ def live_setup():
     }
 
     dashboard_server.should_exit = True
-    dashboard_thread.join(timeout=5)
-    child_server.shutdown()
-    child_server.server_close()
+    for sock in getattr(dashboard_server, "_test_sockets", ()):
+        try:
+            sock.close()
+        except OSError:
+            pass
+    dashboard_thread.join(timeout=1)
+    # shutdown() waits for in-flight SSE handlers and can pin the suite.
+    closer = threading.Thread(target=child_server.shutdown, daemon=True)
+    closer.start()
+    closer.join(timeout=1)
+    try:
+        child_server.server_close()
+    except OSError:
+        pass
     for p in patches:
         p.stop()
 
@@ -169,12 +209,30 @@ def live_setup():
 def browser_context():
     from playwright.sync_api import sync_playwright
     pw = sync_playwright().start()
-    browser = pw.chromium.launch()
+    try:
+        browser = pw.chromium.launch()
+    except Exception:
+        shells = sorted(
+            Path.home().glob(
+                "Library/Caches/ms-playwright/chromium_headless_shell-*"
+                "/chrome-headless-shell-mac-arm64/chrome-headless-shell"
+            )
+        )
+        if not shells:
+            raise
+        browser = pw.chromium.launch(executable_path=str(shells[-1]))
     context = browser.new_context(viewport={"width": 1280, "height": 800})
     yield context
-    context.close()
-    browser.close()
-    pw.stop()
+    def _close() -> None:
+        try:
+            context.close()
+            browser.close()
+            pw.stop()
+        except Exception:
+            pass
+    closer = threading.Thread(target=_close, daemon=True)
+    closer.start()
+    closer.join(timeout=2)
 
 
 def _wait_for_iframe_content(page, selector="#label", timeout=15000):
@@ -190,7 +248,8 @@ class TestIframeUrlSync:
         page.goto(f"{live_setup['dashboard']}/child-app", wait_until="domcontentloaded")
         _wait_for_iframe_content(page)
         iframe_src = page.locator(".iframe-container.active iframe").get_attribute("src")
-        assert iframe_src == f"{live_setup['dashboard']}/proxy/child-app/"
+        assert iframe_src == f"http://localhost:{live_setup['dashboard_port']}/proxy/child-app/"
+        assert urlparse(iframe_src).hostname != urlparse(page.url).hostname
 
     def test_sse_streams_first_byte_with_headers_and_closes_upstream(self, live_setup):
         import httpx
@@ -308,6 +367,38 @@ class TestIframeUrlSync:
         )
         body = resp.read().decode()
         assert "Child" in body or "Home" in body
+
+    def test_leaving_app_closes_upstream_event_stream(self, live_setup, browser_context):
+        """Parking a hidden iframe closes the proxied event stream it opened."""
+        page = browser_context.new_page()
+        page.goto(
+            f"{live_setup['dashboard']}/child-app/hold",
+            wait_until="domcontentloaded",
+        )
+        assert live_setup["child_server"].first_sse_event.wait(10)
+        page.evaluate("showWelcome()")
+        assert live_setup["child_server"].sse_disconnected.wait(5)
+        src = page.locator(".iframe-container iframe").get_attribute("src")
+        assert src == "about:blank"
+
+    def test_polling_does_not_cache_bust_icons(self, live_setup, browser_context):
+        """Rebuilding an unchanged process list must not mint a new icon URL."""
+        page = browser_context.new_page()
+        page.goto(live_setup["dashboard"], wait_until="domcontentloaded")
+        first, second = page.evaluate(
+            """() => {
+                const item = {name:'child-app', port:1, icon_status:'ready', is_html:true};
+                window.CHANGE_VERSION = 3;
+                updateProcessList([item]);
+                const a = document.querySelector('img.process-icon').getAttribute('src');
+                updateProcessList([Object.assign({}, item)]);
+                const b = document.querySelector('img.process-icon').getAttribute('src');
+                return [a, b];
+            }"""
+        )
+        assert first == second
+        assert "v=3" in first
+        assert "Date.now" not in first
 
 
 # ---------------------------------------------------------------------------
