@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from health import start_health_watch
 from html_checker import check_port_returns_html
 from icon_generator import (
     get_change_version,
@@ -44,6 +45,10 @@ SCAN_INTERVAL = 30  # 30 seconds
 
 # Process name to exclude (self)
 SELF_NAME = "auto-gui"
+
+# Set by ./run serve before uvicorn binds. None in tests, which must not
+# os._exit the pytest process.
+HEALTH_PORT: int | None = None
 
 
 async def scan_and_update_processes(trigger_icons: bool = True, force_icons: bool = False):
@@ -151,14 +156,19 @@ async def background_scanner():
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Lifecycle manager for the FastAPI app."""
-    # Startup: run initial scan WITHOUT triggering icon generation
-    # This ensures the server starts quickly and is responsive
-    await scan_and_update_processes(trigger_icons=False)
+    # Accept traffic before the process scan. A scan that waits on dead ports
+    # must not leave the listen socket up with nobody answering.
+    if HEALTH_PORT is not None:
+        start_health_watch(HEALTH_PORT)
 
     # Start the icon generation worker (processes queue in background)
     start_icon_worker()
 
-    # Start background scanner - it will queue icon generation on first run
+    # Start background scanner - it will queue icon generation on first run.
+    # Keep a reference so the task is not garbage-collected mid-scan.
+    startup_scan = asyncio.create_task(
+        scan_and_update_processes(trigger_icons=False)
+    )
     scanner_task = asyncio.create_task(background_scanner())
 
     print("Server ready - icon generation will run in background")
@@ -166,11 +176,13 @@ async def lifespan(_app: FastAPI):
 
     # Shutdown: stop icon worker and cancel background scanner
     stop_icon_worker()
+    startup_scan.cancel()
     scanner_task.cancel()
-    try:
-        await scanner_task
-    except asyncio.CancelledError:
-        pass
+    for task in (startup_scan, scanner_task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 # Create FastAPI app
@@ -219,6 +231,12 @@ async def proxy_route(request: Request, name: str, path: str = ""):
 async def proxy_ws_route(ws: WebSocket, name: str, path: str = ""):
     """Proxy WebSocket upgrades through Auto-GUI."""
     await proxy_websocket(name, path, ws)
+
+
+@app.get("/healthz", response_class=PlainTextResponse)
+async def healthz():
+    """Liveness probe. Must not touch state or the process scan."""
+    return "ok"
 
 
 @app.get("/", response_class=HTMLResponse)

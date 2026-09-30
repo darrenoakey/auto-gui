@@ -57,6 +57,20 @@ def mock_processes():
     ]
 
 
+class TestHealthz:
+    def test_healthz_is_not_swallowed_by_process_route(self, mock_state):
+        with (
+            patch("server.get_icons_dir", return_value=mock_state / "local" / "icons"),
+            patch("server.scan_and_update_processes", new_callable=AsyncMock),
+            patch("server.background_scanner", new_callable=AsyncMock),
+        ):
+            from server import app
+            with closing(TestClient(app)) as client:
+                response = client.get("/healthz")
+                assert response.status_code == 200
+                assert response.text == "ok"
+
+
 class TestIndexRoute:
     def test_renders_index_page(self, mock_state, mock_processes):
         with (
