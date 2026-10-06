@@ -228,10 +228,24 @@ function installSameOriginHistoryBridge(container) {
 }
 
 /**
+ * Build the direct (non-proxied) URL for a process or manual website.
+ *
+ * Unlike the iframe base URL, this deliberately bypasses the /proxy/{name}
+ * reverse proxy: the popout arrow is an escape hatch to the real app,
+ * not another dashboard frame.
+ */
+function directAppUrl(port, url, isWebsite, protocol) {
+    if (isWebsite) {
+        return url;
+    }
+    return `${protocol || 'http'}://${window.location.hostname}:${port}/`;
+}
+
+/**
  * Open a process or website in a new browser window
  */
 function openInNewWindow(name, port, url, isWebsite, protocol) {
-    const targetUrl = buildBaseUrl(port, url, isWebsite, protocol, name);
+    const targetUrl = directAppUrl(port, url, isWebsite, protocol);
     window.open(targetUrl, '_blank');
 }
 
