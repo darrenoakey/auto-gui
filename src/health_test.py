@@ -2,7 +2,7 @@
 import socket
 import threading
 
-from health import http_ok, watch_port
+from health import http_ok, runtime_present, watch_port
 
 
 def _closed_port() -> int:
@@ -86,6 +86,53 @@ def test_watch_exits_only_after_repeated_failures():
         # Several successful probes must not exit.
         assert not exited.wait(0.18)
         server.close()
+        assert exited.wait(2)
+    finally:
+        server.close()
+        watcher.join(2)
+
+
+def test_runtime_present_tracks_a_real_stdlib_directory(tmp_path):
+    stdlib = tmp_path / "lib" / "python3.x"
+    stdlib.mkdir(parents=True)
+    (stdlib / "os.py").write_text("")
+    assert runtime_present(str(stdlib)) is True
+    (stdlib / "os.py").unlink()
+    stdlib.rmdir()
+    assert runtime_present(str(stdlib)) is False
+
+
+def test_runtime_present_accepts_this_interpreter():
+    assert runtime_present() is True
+
+
+def test_watch_exits_when_runtime_is_removed_even_if_http_answers(tmp_path):
+    server = _HealthServer()
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    (stdlib / "os.py").write_text("")
+    exited = threading.Event()
+
+    def exit_fn(code: int) -> None:
+        assert code == 1
+        exited.set()
+
+    watcher = threading.Thread(
+        target=watch_port,
+        kwargs={
+            "port": server.port,
+            "interval": 0.05,
+            "timeout": 0.2,
+            "failures_required": 2,
+            "exit_fn": exit_fn,
+            "runtime_ok": lambda: runtime_present(str(stdlib)),
+        },
+        daemon=True,
+    )
+    watcher.start()
+    try:
+        assert not exited.wait(0.18)
+        (stdlib / "os.py").unlink()
         assert exited.wait(2)
     finally:
         server.close()

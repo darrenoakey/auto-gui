@@ -11,7 +11,9 @@ Commands:
     check   Run all quality gates
 """
 import argparse
+import hashlib
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +22,48 @@ from pathlib import Path
 def get_project_root() -> Path:
     """Returns the absolute path to the project directory."""
     return Path(__file__).parent.absolute()
+
+
+VENV = get_project_root() / ".venv"
+VENV_PYTHON = VENV / "bin" / "python"
+REQUIREMENTS = get_project_root() / "requirements.txt"
+REQUIREMENTS_STAMP = VENV / ".requirements.sha256"
+
+
+def _venv_usable() -> bool:
+    """True when the venv interpreter still starts. A removed or upgraded
+    base interpreter leaves a venv whose python no longer runs."""
+    if not VENV_PYTHON.exists():
+        return False
+    probe = subprocess.run(
+        [str(VENV_PYTHON), "-c", "import sys"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return probe.returncode == 0
+
+
+def ensure_venv() -> None:
+    """Runs this script from the project venv, creating and syncing it first.
+
+    Dependencies live in .venv rather than the ambient interpreter's
+    site-packages, so a Homebrew bump of `python3` to a new minor version does
+    not leave auto-gui without fastapi on its next restart.
+    """
+    if Path(sys.prefix).resolve() == VENV.resolve():
+        return
+    if not _venv_usable():
+        shutil.rmtree(VENV, ignore_errors=True)
+        subprocess.run([sys.executable, "-m", "venv", str(VENV)], check=True)
+    wanted = hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest()
+    have = REQUIREMENTS_STAMP.read_text().strip() if REQUIREMENTS_STAMP.exists() else ""
+    if have != wanted:
+        subprocess.run(
+            [str(VENV_PYTHON), "-m", "pip", "install", "-q", "-r", str(REQUIREMENTS)],
+            check=True,
+        )
+        REQUIREMENTS_STAMP.write_text(wanted + "\n")
+    os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), str(Path(__file__).absolute()), *sys.argv[1:]])
 
 
 def run_serve(args):
@@ -183,4 +227,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_venv()
     main()

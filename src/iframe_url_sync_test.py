@@ -173,8 +173,10 @@ def live_setup():
     import urllib.request
     for _ in range(50):
         try:
-            urllib.request.urlopen(f"http://127.0.0.1:{dashboard_port}", timeout=1)
-            urllib.request.urlopen(child_url, timeout=1)
+            with urllib.request.urlopen(f"http://127.0.0.1:{dashboard_port}", timeout=1):
+                pass
+            with urllib.request.urlopen(child_url, timeout=1):
+                pass
             break
         except Exception:
             time.sleep(0.2)
@@ -186,13 +188,16 @@ def live_setup():
         "child_server": child_server,
     }
 
+    # Let uvicorn close its own listeners and connections on its loop. Closing
+    # the listen sockets from this thread first leaves the selector holding
+    # fd -1 and the open connections are finalized unclosed.
     dashboard_server.should_exit = True
+    dashboard_thread.join(timeout=10)
     for sock in getattr(dashboard_server, "_test_sockets", ()):
         try:
             sock.close()
         except OSError:
             pass
-    dashboard_thread.join(timeout=1)
     # shutdown() waits for in-flight SSE handlers and can pin the suite.
     closer = threading.Thread(target=child_server.shutdown, daemon=True)
     closer.start()
@@ -222,17 +227,16 @@ def browser_context():
             raise
         browser = pw.chromium.launch(executable_path=str(shells[-1]))
     context = browser.new_context(viewport={"width": 1280, "height": 800})
-    yield context
-    def _close() -> None:
+    try:
+        yield context
+    finally:
+        # The sync API is bound to this thread. Closing it from a helper thread
+        # fails silently and leaves its loop alive, so the next test's
+        # sync_playwright() refuses to start "inside the asyncio loop".
         try:
-            context.close()
             browser.close()
+        finally:
             pw.stop()
-        except Exception:
-            pass
-    closer = threading.Thread(target=_close, daemon=True)
-    closer.start()
-    closer.join(timeout=2)
 
 
 def _wait_for_iframe_content(page, selector="#label", timeout=15000):

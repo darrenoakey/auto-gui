@@ -4,10 +4,16 @@ auto's watcher only restarts a process whose PID is dead. A live process whose
 listen socket has vanished, or whose event loop no longer answers, stays up and
 the dashboard hangs. This probe runs outside the event loop and exits the
 process after repeated failed checks so auto can start a fresh one.
+
+It also exits when the interpreter this process started on has been removed
+from disk. A Homebrew patch upgrade deletes the old Cellar directory under a
+running server; /healthz keeps answering, but any lazily loaded stdlib module
+(jinja2's unicode-escape codec, for one) then fails and every page is a 500.
 """
 from __future__ import annotations
 
 import os
+import sysconfig
 import threading
 import time
 import urllib.error
@@ -19,6 +25,15 @@ from collections.abc import Callable
 CHECK_INTERVAL_SECONDS = 15.0
 CHECK_TIMEOUT_SECONDS = 2.0
 FAILURES_REQUIRED = 3
+
+# Resolved at import, so it names the exact versioned install this process runs
+# on rather than Homebrew's floating opt/ symlink.
+STARTUP_STDLIB = os.path.realpath(sysconfig.get_path("stdlib"))
+
+
+def runtime_present(stdlib_dir: str = STARTUP_STDLIB) -> bool:
+    """Returns False once the stdlib this process started with is gone."""
+    return os.path.isfile(os.path.join(stdlib_dir, "os.py"))
 
 
 def http_ok(port: int, timeout: float) -> bool:
@@ -40,11 +55,20 @@ def watch_port(
     exit_fn: Callable[[int], None] = os._exit,
     sleep_fn: Callable[[float], None] = time.sleep,
     probe: Callable[[int, float], bool] = http_ok,
+    runtime_ok: Callable[[], bool] = runtime_present,
 ) -> None:
-    """Exits the process after failures_required consecutive failed probes."""
+    """Exits the process after failures_required consecutive failed probes,
+    or at once when the interpreter it runs on has been replaced on disk."""
     misses = 0
     while misses < failures_required:
         sleep_fn(interval)
+        if not runtime_ok():
+            print(
+                f"[health] interpreter stdlib {STARTUP_STDLIB} is gone; "
+                "exiting so auto can restart on the installed Python"
+            )
+            exit_fn(1)
+            return
         if probe(port, timeout):
             misses = 0
         else:

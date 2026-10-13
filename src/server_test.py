@@ -365,10 +365,16 @@ class TestSmokeE2E:
     @pytest.fixture(autouse=True)
     def _require_live_server(self):
         """Skip if the live server isn't reachable."""
+        import urllib.error
         import urllib.request
         try:
-            urllib.request.urlopen(self.BASE, timeout=3)
-        except Exception:
+            with urllib.request.urlopen(self.BASE, timeout=3):
+                pass
+        except urllib.error.HTTPError as exc:
+            # An HTTPError owns the response socket; close it or it leaks.
+            exc.close()
+            pytest.fail(f"Live server at {self.BASE} answered HTTP {exc.code}")
+        except (urllib.error.URLError, OSError):
             pytest.skip("Live server not running at localhost:2000")
 
     @pytest.fixture
